@@ -1,4 +1,4 @@
-# main.py - ECI Voter Info API (FINAL COMPLETE)
+# main.py - ECI Voter Info API (FINAL COMPLETE) — FIXED
 # Made by @KINGFFAIAK47x · ANSH AFT
 
 from flask import Flask, jsonify, request
@@ -292,7 +292,7 @@ def extract_detail(body):
 
 
 # ==============================================
-# ⚡ FULL NAME COMBINATION LOGIC
+# ⚡ FULL NAME COMBINATION
 # ==============================================
 
 def combine_names(detail):
@@ -302,122 +302,40 @@ def combine_names(detail):
     """
     if not detail:
         return detail
-    
+
     out = dict(detail)
-    
+
     # ═══ VOTER FULL NAME ═══
     first = (out.get("first_name") or "").strip()
     last = (out.get("last_name") or "").strip()
-    
+
     parts = []
     if first and first.upper() not in ("N/A", "NONE", "-"):
         parts.append(first)
     if last and last.upper() not in ("N/A", "NONE", "-"):
         parts.append(last)
-    
-    if parts:
-        out["full_name"] = " ".join(parts)
-    else:
-        out["full_name"] = "N/A"
-    
+
+    out["full_name"] = " ".join(parts) if parts else "N/A"
+
     # ═══ RELATIVE FULL NAME ═══
     rel_first = (out.get("rel_first") or "").strip()
     rel_last = (out.get("rel_last") or "").strip()
-    
+
     rel_parts = []
     if rel_first and rel_first.upper() not in ("N/A", "NONE", "-"):
         rel_parts.append(rel_first)
     if rel_last and rel_last.upper() not in ("N/A", "NONE", "-"):
         rel_parts.append(rel_last)
-    
-    if rel_parts:
-        out["relative_full_name"] = " ".join(rel_parts)
-    else:
-        out["relative_full_name"] = "N/A"
-    
+
+    out["relative_full_name"] = " ".join(rel_parts) if rel_parts else "N/A"
+
     # ═══ VOTER NAME WITH RELATIVE ═══
-    # Format: "VOTER NAME S/O RELATIVE NAME"
     if parts and rel_parts:
         out["voter_with_relative"] = f"{out['full_name']} S/O {out['relative_full_name']}"
     else:
         out["voter_with_relative"] = out.get("full_name", "N/A")
-    
-    # ═══ RELATIVE FULL NAME (l1 style) ═══
-    # If API gives like "Relativefullnamel1" just set alias
-    out["relative_full_name_l1"] = out.get("relative_full_name", "N/A")
-    
+
     return out
-
-
-# ==============================================
-# ⚡ SCORE CALCULATOR
-# ==============================================
-
-def calculate_score(detail):
-    """
-    Calculate confidence score based on data completeness
-    Score 0-100
-    """
-    if not detail:
-        return {"score": 0, "grade": "F", "fields_found": 0, "total_fields": 14}
-    
-    # Important fields with weights
-    important_fields = {
-        "full_name": 15,
-        "first_name": 5,
-        "last_name": 5,
-        "relative_full_name": 12,
-        "rel_first": 4,
-        "rel_last": 4,
-        "age": 10,
-        "gender": 8,
-        "epic": 12,
-        "state": 6,
-        "pc": 5,
-        "ac": 5,
-        "ps": 4,
-        "part": 3,
-        "psn": 2,
-        "polling": 2,
-    }
-    
-    score = 0
-    fields_found = 0
-    total = len(important_fields)
-    
-    for field, weight in important_fields.items():
-        val = detail.get(field)
-        if val and str(val).strip() and str(val).upper() not in ("N/A", "NONE", "-", ""):
-            score += weight
-            fields_found += 1
-    
-    # Normalize to 0-100
-    max_score = sum(important_fields.values())
-    normalized_score = round((score / max_score) * 100, 2) if max_score > 0 else 0
-    
-    # Grade
-    if normalized_score >= 90:
-        grade = "A+"
-    elif normalized_score >= 80:
-        grade = "A"
-    elif normalized_score >= 70:
-        grade = "B"
-    elif normalized_score >= 60:
-        grade = "C"
-    elif normalized_score >= 50:
-        grade = "D"
-    elif normalized_score >= 30:
-        grade = "E"
-    else:
-        grade = "F"
-    
-    return {
-        "score": normalized_score,
-        "grade": grade,
-        "fields_found": fields_found,
-        "total_fields": total,
-        "completeness": f"{fields_found}/{total}"
-    }
 
 
 # ==============================================
@@ -425,13 +343,9 @@ def calculate_score(detail):
 # ==============================================
 
 def parse_api_response(body_text):
-    """
-    Parse ECI search API response properly
-    Returns: (has_data: bool, records_count: int, error_msg: str or None)
-    """
     if not body_text:
         return False, 0, "Empty response"
-    
+
     try:
         data = json.loads(body_text)
     except:
@@ -441,38 +355,38 @@ def parse_api_response(body_text):
         if any(x in body_lower for x in ["no data", "not found", "no record"]):
             return False, 0, "No data found"
         return True, 0, None
-    
+
     if isinstance(data, dict):
         success = data.get("success", data.get("Success", True))
         if success is False:
             msg = data.get("message", data.get("Message", "Request failed"))
             return False, 0, msg
-        
+
         records = data.get("data", data.get("result", data.get("records", [])))
-        
+
         if isinstance(records, list):
             if len(records) == 0:
                 return False, 0, "No voter records found"
             return True, len(records), None
-        
+
         if isinstance(records, dict):
             inner = records.get("data", records.get("result", []))
             if isinstance(inner, list):
                 if len(inner) == 0:
                     return False, 0, "No voter records found"
                 return True, len(inner), None
-        
+
         msg = data.get("message", data.get("Message", ""))
         if msg and any(x in str(msg).lower() for x in ["no", "not found", "invalid"]):
             return False, 0, str(msg)
-        
+
         return True, 0, None
-    
+
     if isinstance(data, list):
         if len(data) == 0:
             return False, 0, "No voter records found"
         return True, len(data), None
-    
+
     return True, 0, None
 
 
@@ -496,95 +410,87 @@ async def click_refresh(page):
         el = await page.query_selector('i.fa-rotate-right, i[class*="rotate"]')
         if el:
             await el.click()
-            await page.wait_for_timeout(200)
+            await page.wait_for_timeout(300)
             return
     except:
         pass
-    await page.wait_for_timeout(200)
+    await page.wait_for_timeout(300)
 
 
 # ==============================================
-# ⚡ FAST VD CLICKER
+# ⚡ FAST VD CLICKER (simplified & reliable)
 # ==============================================
 
 async def find_and_click_vd(page):
-    """Fast VD clicker - 5 methods"""
-    
-    # Method 1: JavaScript exact text
+    """Click View Details — same reliable method as s.py"""
+
+    # Method 1: exact text "View Details" (primary)
     try:
-        result = await page.evaluate("""() => {
-            for (const el of document.querySelectorAll('button, a, span, div, td')) {
+        ok = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('a, button')) {
+                const t = (el.innerText || '').trim();
+                if (t === 'View Details') {
+                    el.scrollIntoView({block:'center'});
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if ok:
+            return True, "exact_a_button"
+    except:
+        pass
+
+    # Method 2: any element with exact "View Details"
+    try:
+        ok = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('span, div, td, a, button')) {
                 const t = (el.innerText || '').trim();
                 if (t === 'View Details') {
                     const r = el.getBoundingClientRect();
                     if (r.width > 0 && r.height > 0) {
-                        el.scrollIntoView({block: 'center'});
+                        el.scrollIntoView({block:'center'});
                         el.click();
-                        return {success: true, tag: el.tagName};
+                        return true;
                     }
                 }
             }
-            return {success: false};
+            return false;
         }""")
-        if result.get("success"):
-            return True, "js_exact"
+        if ok:
+            return True, "exact_any"
     except:
         pass
-    
-    # Method 2: href viewdetail
+
+    # Method 3: href contains viewdetail
     try:
-        result = await page.evaluate("""() => {
+        ok = await page.evaluate("""() => {
             for (const el of document.querySelectorAll('a[href]')) {
                 const h = (el.href || '').toLowerCase();
-                if (h.includes('viewdetail')) {
-                    el.scrollIntoView({block: 'center'});
+                if (h.includes('viewdetail') || h.includes('view-detail')) {
+                    el.scrollIntoView({block:'center'});
                     el.click();
-                    return {success: true};
+                    return true;
                 }
             }
-            return {success: false};
+            return false;
         }""")
-        if result.get("success"):
+        if ok:
             return True, "href"
     except:
         pass
-    
-    # Method 3: Playwright get_by_text
+
+    # Method 4: Playwright get_by_text
     try:
         loc = page.get_by_text("View Details", exact=True)
         if await loc.count() > 0:
-            await loc.first.scroll_into_view_if_needed(timeout=1000)
-            await loc.first.click(timeout=1000)
+            await loc.first.scroll_into_view_if_needed(timeout=1500)
+            await loc.first.click(timeout=1500)
             return True, "get_by_text"
     except:
         pass
-    
-    # Method 4: Case insensitive
-    try:
-        result = await page.evaluate("""() => {
-            for (const el of document.querySelectorAll('button, a')) {
-                const t = (el.innerText || '').trim().toLowerCase();
-                if (t === 'view details') {
-                    el.click();
-                    return {success: true};
-                }
-            }
-            return {success: false};
-        }""")
-        if result.get("success"):
-            return True, "lowercase"
-    except:
-        pass
-    
-    # Method 5: href selector
-    try:
-        links = await page.query_selector_all('a[href*="viewdetail" i]')
-        if links:
-            await links[0].click()
-            return True, "href_query"
-    except:
-        pass
-    
+
     return False, "none"
 
 
@@ -596,7 +502,7 @@ async def run_search(epic):
     pw = get_pw()
     if not pw:
         return {"error": "PLAYWRIGHT_MISSING", "message": "Playwright not installed"}
-    
+
     async with pw() as p:
         browser = await p.chromium.launch(
             headless=True,
@@ -605,10 +511,9 @@ async def run_search(epic):
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--single-process",
             ],
         )
-        
+
         try:
             ctx = await browser.new_context(
                 viewport={"width": 1366, "height": 900},
@@ -796,93 +701,58 @@ async def run_search(epic):
                         "error": "NO_DATA",
                         "message": err_msg or f"No voter record found for EPIC: {epic}"
                     }
-            
-            # ═══ Fast VD Click - 3 Rounds ═══
+
+            # ═══ Click View Details (simple + reliable) ═══
+            await page.wait_for_timeout(500)
+
             vd_success = False
             vd_method = ""
-            
-            # Round 1: Fast (5 × 400ms = 2s)
-            for _ in range(5):
-                await page.wait_for_timeout(400)
+
+            for _ in range(8):
                 ok_vd, method = await find_and_click_vd(page)
                 if ok_vd:
                     vd_success = True
-                    vd_method = f"r1_{method}"
+                    vd_method = method
                     break
+                # check if URL already changed
                 try:
                     if "viewdetail" in page.url.lower():
                         vd_success = True
-                        vd_method = "r1_url"
+                        vd_method = "url_already"
                         break
                 except:
                     pass
-            
-            # Round 2: Medium (5 × 800ms = 4s)
-            if not vd_success:
-                for _ in range(5):
-                    await page.wait_for_timeout(800)
-                    ok_vd, method = await find_and_click_vd(page)
-                    if ok_vd:
-                        vd_success = True
-                        vd_method = f"r2_{method}"
-                        break
-                    try:
-                        if "viewdetail" in page.url.lower():
-                            vd_success = True
-                            vd_method = "r2_url"
-                            break
-                    except:
-                        pass
-                    try:
-                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    except:
-                        pass
-            
-            # Round 3: Long (4 × 2000ms = 8s)
-            if not vd_success:
-                for _ in range(4):
-                    await page.wait_for_timeout(2000)
-                    ok_vd, method = await find_and_click_vd(page)
-                    if ok_vd:
-                        vd_success = True
-                        vd_method = f"r3_{method}"
-                        break
-                    try:
-                        if "viewdetail" in page.url.lower():
-                            vd_success = True
-                            vd_method = "r3_url"
-                            break
-                    except:
-                        pass
-            
+                await page.wait_for_timeout(400)
+
             if not vd_success:
                 await browser.close()
                 return {
                     "error": "VIEW_DETAILS_FAILED",
-                    "message": "View Details button not found after 14s wait"
+                    "message": "View Details button not found"
                 }
 
             # ═══════════════════════════════════════════════
-            # ⚡ FIXED: DETAIL PAGE WAIT (MULTI-ROUND)
+            # ⚡ DETAIL PAGE WAIT (same approach as s.py)
             # ═══════════════════════════════════════════════
             detail_ready = False
-            
-            # Round 1: Check URL change (up to 10s)
-            for _ in range(50):
+
+            # Primary: wait for URL change (up to 12s)
+            for _ in range(60):
                 try:
-                    if "viewdetail" in page.url.lower():
+                    if "viewdetail" in page.url.lower() or "view-detail" in page.url.lower():
                         detail_ready = True
                         break
                 except:
                     pass
                 await page.wait_for_timeout(200)
-            
-            # Round 2: Check all tabs (new tab may open)
+
+            # Fallback: check if new tab opened
             if not detail_ready:
                 for _ in range(20):
                     for pg in ctx.pages:
                         try:
-                            if "viewdetail" in pg.url.lower():
+                            u = pg.url.lower()
+                            if "viewdetail" in u or "view-detail" in u:
                                 page = pg
                                 detail_ready = True
                                 break
@@ -891,60 +761,52 @@ async def run_search(epic):
                     if detail_ready:
                         break
                     await page.wait_for_timeout(300)
-            
-            # Round 3: Wait more if still not loaded
-            if not detail_ready:
-                for _ in range(30):
-                    try:
-                        cur = page.url
-                        if "viewdetail" in cur.lower() or "view-detail" in cur.lower():
-                            detail_ready = True
-                            break
-                    except:
-                        pass
-                    await page.wait_for_timeout(500)
 
             if not detail_ready:
                 await browser.close()
                 return {
                     "error": "DETAIL_PAGE_FAILED",
-                    "message": "Detail page not loaded after 25s wait"
+                    "message": "Detail page not loaded (URL did not change to viewdetail)"
                 }
 
             # ═══ Wait for SPA render ═══
             try:
-                await page.wait_for_load_state("networkidle", timeout=8000)
+                await page.wait_for_load_state("networkidle", timeout=10000)
             except:
                 pass
-            
-            # Multi-round body check
+            await page.wait_for_timeout(1500)
+
+            # Multi-round body fetch
             body = ""
             for _ in range(5):
-                await page.wait_for_timeout(1500)
                 try:
                     body = await page.evaluate("() => document.body.innerText")
                 except:
                     body = ""
-                
+
                 if body and len(body) > 200:
-                    # Check if it has actual data
                     if any(x in body for x in ["First Name", "प्रथम नाम", "EPIC No", "ईपीआईसी"]):
                         break
 
+                await page.wait_for_timeout(1500)
+
+            if not body or len(body) < 100:
+                await browser.close()
+                return {
+                    "error": "DETAIL_EMPTY",
+                    "message": "Detail page loaded but body was empty"
+                }
+
             # ═══ Extract ═══
             d = extract_detail(body)
-            
+
             # ═══ ⚡ COMBINE NAMES ═══
             d = combine_names(d)
-            
-            # ═══ ⚡ CALCULATE SCORE ═══
-            score_data = calculate_score(d)
-            
+
             await browser.close()
 
             return {
                 "detail": d,
-                "score": score_data,
                 "raw_length": len(body) if body else 0,
                 "vd_method": vd_method
             }
@@ -965,7 +827,7 @@ async def run_search(epic):
 def home():
     return jsonify({
         "service": "🗳️ ECI Voter Info API",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "endpoints": {
             "/api/voterid": {
                 "example": "/api/voterid?key={your_api_key}&epic_number={epic}"
@@ -979,19 +841,19 @@ def home():
 def voterid_query():
     k = request.args.get('key', '').strip()
     e = request.args.get('epic_number', '').strip()
-    
+
     if not k:
         return jsonify({"status": "error", "error_code": "MISSING_API_KEY",
                         "message": "API key required"}), 401
-    
+
     if k not in VALID_KEYS:
         return jsonify({"status": "error", "error_code": "INVALID_API_KEY",
                         "message": "Invalid API key"}), 403
-    
+
     if not e:
         return jsonify({"status": "error", "error_code": "MISSING_EPIC",
                         "message": "EPIC number required"}), 400
-    
+
     return process_voter(e)
 
 
@@ -1018,10 +880,10 @@ def process_voter(epic):
     if not ok:
         return jsonify({"status": "error", "error_code": "INVALID_EPIC",
                         "message": result}), 400
-    
+
     epic_clean = result
     start = time.time()
-    
+
     # Cache
     cached = cache_get(epic_clean)
     if cached:
@@ -1029,7 +891,7 @@ def process_voter(epic):
         cached["response_time"] = f"{round((time.time()-start)*1000,2)}ms"
         cached["_from_cache"] = True
         return jsonify(cached), 200
-    
+
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -1037,9 +899,9 @@ def process_voter(epic):
             result = loop.run_until_complete(run_search(epic_clean))
         finally:
             loop.close()
-        
+
         total = round((time.time()-start)*1000, 2)
-        
+
         if "error" in result:
             return jsonify({
                 "status": "error",
@@ -1047,19 +909,18 @@ def process_voter(epic):
                 "message": result.get("message", "Failed"),
                 "response_time": f"{total}ms"
             }), 400
-        
+
         out = {
             "status": "success",
             "epic": epic_clean,
             "detail": result.get("detail", {}),
-            "score": result.get("score", {}),
             "response_time": f"{total}ms",
             "_from_cache": False
         }
-        
+
         cache_set(epic_clean, out)
         return jsonify(out), 200
-        
+
     except Exception as e:
         return jsonify({
             "status": "error",
@@ -1099,7 +960,7 @@ def ie(e):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 60)
-    print("🗳️ ECI VOTER INFO API v3.0 (FINAL COMPLETE)")
+    print("🗳️ ECI VOTER INFO API v3.1 (FINAL FIXED)")
     print("=" * 60)
     print(f"🚀 Port: {port}")
     print("🔑 Key: QWM")
