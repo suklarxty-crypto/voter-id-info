@@ -1,4 +1,4 @@
-# main.py - ECI Voter Info API (Render Docker + Cache)
+# main.py - ECI Voter Info API (Render Docker + Cache + FIXED)
 # Made by @KINGFFAIAK47x · ANSH AFT
 
 from flask import Flask, jsonify, request
@@ -49,7 +49,6 @@ CACHE_DIR = "/tmp/eci_cache"
 CACHE_TTL = 86400  # 24 hours
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-
 # ==============================================
 # LAZY LOADERS
 # ==============================================
@@ -89,13 +88,11 @@ def get_playwright():
 # ==============================================
 
 def get_cache_path(epic):
-    """Get cache file path for EPIC"""
     hash_name = hashlib.md5(epic.encode()).hexdigest()
     return os.path.join(CACHE_DIR, f"{hash_name}.json")
 
 
 def get_from_cache(epic):
-    """Get cached data for EPIC"""
     path = get_cache_path(epic)
     if not os.path.exists(path):
         return None
@@ -118,7 +115,6 @@ def get_from_cache(epic):
 
 
 def save_to_cache(epic, data):
-    """Save data to cache"""
     try:
         cache_data = data.copy()
         cache_data["_cached_at_ts"] = time.time()
@@ -133,7 +129,6 @@ def save_to_cache(epic, data):
 
 
 def clear_cache(epic=None):
-    """Clear cache for specific EPIC or all"""
     if epic:
         path = get_cache_path(epic)
         if os.path.exists(path):
@@ -144,7 +139,6 @@ def clear_cache(epic=None):
                 return False
         return False
     else:
-        # Clear all
         try:
             for f in os.listdir(CACHE_DIR):
                 if f.endswith(".json"):
@@ -155,7 +149,6 @@ def clear_cache(epic=None):
 
 
 def get_cache_stats():
-    """Get cache statistics"""
     try:
         files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json")]
         total_size = 0
@@ -398,7 +391,7 @@ async def click_refresh(page):
 
 
 # ==============================================
-# MAIN SEARCH FLOW
+# MAIN SEARCH FLOW - FIXED
 # ==============================================
 
 async def run_search(epic):
@@ -410,6 +403,8 @@ async def run_search(epic):
             "message": "Playwright not installed"
         }
     
+    debug_log = []
+    
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
@@ -419,6 +414,7 @@ async def run_search(epic):
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--single-process",
+                "--disable-images",  # Faster loading
             ],
         )
         
@@ -435,6 +431,8 @@ async def run_search(epic):
             """)
             await page.route("**/*", block_heavy)
 
+            # ═══ STEP 1: Load page ═══
+            debug_log.append("Loading page...")
             try:
                 await page.goto(BASE + "/", wait_until="domcontentloaded", timeout=20000)
             except Exception as e:
@@ -442,21 +440,26 @@ async def run_search(epic):
                 return {
                     "status": "error",
                     "error_code": "PAGE_LOAD_FAILED",
-                    "message": f"Failed to load ECI page: {str(e)[:150]}"
+                    "message": f"Failed to load ECI page: {str(e)[:150]}",
+                    "debug": debug_log
                 }
 
-            await page.wait_for_timeout(700)
+            await page.wait_for_timeout(1500)  # Increased
+            debug_log.append("Page loaded")
 
+            # ═══ STEP 2: Click EPIC tab ═══
             for sel in ['text=Search by EPIC', 'text=ईपीआईसी द्वारा खोजें',
                         'button:has-text("EPIC")']:
                 try:
-                    await page.click(sel, timeout=800)
+                    await page.click(sel, timeout=1000)
+                    debug_log.append(f"EPIC tab clicked: {sel}")
                     break
                 except Exception:
                     continue
 
-            await page.wait_for_timeout(250)
+            await page.wait_for_timeout(500)
 
+            # ═══ STEP 3: Fill EPIC ═══
             ok = await page.evaluate("""(epic) => {
                 for (const e of document.querySelectorAll('input')) {
                     const s = (e.placeholder||'') + (e.name||'') + (e.id||'');
@@ -477,11 +480,14 @@ async def run_search(epic):
                 return {
                     "status": "error",
                     "error_code": "EPIC_FILL_FAILED",
-                    "message": "Could not fill EPIC field"
+                    "message": "Could not fill EPIC field",
+                    "debug": debug_log
                 }
 
-            await page.wait_for_timeout(200)
+            debug_log.append(f"EPIC filled: {epic}")
+            await page.wait_for_timeout(300)
 
+            # ═══ STEP 4: Captcha + Search ═══
             search_ok = {"v": False}
 
             async def on_resp(resp):
@@ -501,6 +507,7 @@ async def run_search(epic):
 
             for attempt in range(1, max_attempts + 1):
                 captcha_attempts = attempt
+                debug_log.append(f"Captcha attempt {attempt}")
 
                 cap_src = await page.evaluate("""() => {
                     for (const img of document.querySelectorAll('img')) {
@@ -536,7 +543,9 @@ async def run_search(epic):
                     continue
 
                 last_txt = text
+                debug_log.append(f"OCR: {text}")
 
+                # Fill captcha
                 await page.evaluate("""(txt) => {
                     for (const e of document.querySelectorAll('input')) {
                         const s = (e.placeholder||'') + (e.name||'') + (e.id||'');
@@ -552,8 +561,9 @@ async def run_search(epic):
                     return false;
                 }""", text)
 
-                await page.wait_for_timeout(80)
+                await page.wait_for_timeout(100)
 
+                # Click SEARCH
                 clicked = await page.evaluate("""() => {
                     for (const b of document.querySelectorAll('button')) {
                         const t = (b.innerText || '').trim();
@@ -572,7 +582,7 @@ async def run_search(epic):
                 await page.mouse.click(clicked["x"], clicked["y"])
 
                 got = False
-                for _ in range(50):
+                for _ in range(60):  # Increased from 50
                     if search_ok["v"]:
                         got = True
                         break
@@ -586,6 +596,7 @@ async def run_search(epic):
                     await page.wait_for_timeout(100)
 
                 if got:
+                    debug_log.append(f"Search success on attempt {attempt}")
                     search_done = True
                     break
 
@@ -596,38 +607,117 @@ async def run_search(epic):
                 return {
                     "status": "error",
                     "error_code": "SEARCH_FAILED",
-                    "message": f"Search failed after {captcha_attempts} attempts.",
-                    "attempts": captcha_attempts
+                    "message": f"Search failed after {captcha_attempts} attempts. Captcha OCR failed.",
+                    "attempts": captcha_attempts,
+                    "debug": debug_log
                 }
 
-            await page.wait_for_timeout(500)
+            # ═══ STEP 5: WAIT FOR RESULT TABLE TO RENDER ═══
+            # ⚡ CRITICAL FIX: Table render hone ka wait karo
+            debug_log.append("Waiting for result table to render...")
+            
+            view_details_found = False
+            for wait_attempt in range(10):
+                await page.wait_for_timeout(500)
+                
+                # Check if View Details exists
+                has_vd = await page.evaluate("""() => {
+                    for (const el of document.querySelectorAll('a, button')) {
+                        const t = (el.innerText || '').trim();
+                        if (t.toLowerCase().includes('view details') || 
+                            t.toLowerCase() === 'view details') {
+                            return true;
+                        }
+                    }
+                    return false;
+                }""")
+                
+                if has_vd:
+                    view_details_found = True
+                    debug_log.append(f"View Details found after {(wait_attempt+1)*500}ms")
+                    break
+                
+                debug_log.append(f"Wait attempt {wait_attempt+1}: View Details not found yet")
+            
+            # If still not found, check for "No data" message
+            if not view_details_found:
+                body_text = await page.evaluate("() => document.body.innerText")
+                if "no data" in body_text.lower() or "not found" in body_text.lower():
+                    await browser.close()
+                    return {
+                        "status": "error",
+                        "error_code": "NO_DATA_FOUND",
+                        "message": f"No voter data found for EPIC: {epic}",
+                        "debug": debug_log
+                    }
+                
+                # Try one more time with longer wait
+                await page.wait_for_timeout(3000)
+                
+                # Check again with relaxed selector
+                has_vd = await page.evaluate("""() => {
+                    const body = document.body.innerText;
+                    return body.includes('View Details') || body.includes('view details');
+                }""")
+                
+                if not has_vd:
+                    await browser.close()
+                    return {
+                        "status": "error",
+                        "error_code": "VIEW_DETAILS_FAILED",
+                        "message": "View Details button not found after 8s wait. Table may not have rendered.",
+                        "debug": debug_log,
+                        "body_preview": body_text[:500] if body_text else ""
+                    }
 
+            # ═══ STEP 6: Click View Details ═══
+            await page.wait_for_timeout(500)
+            
             clicked_vd = await page.evaluate("""() => {
                 for (const el of document.querySelectorAll('a, button')) {
                     const t = (el.innerText || '').trim();
-                    if (t === 'View Details') {
+                    if (t === 'View Details' || t.toLowerCase() === 'view details') {
                         el.scrollIntoView({block:'center'});
                         el.click();
-                        return true;
+                        return {success: true, text: t, tag: el.tagName};
                     }
                 }
-                return false;
+                return {success: false};
             }""")
 
-            if not clicked_vd:
+            if not clicked_vd.get("success"):
+                # Try alternative: find link with href containing "viewdetail"
+                clicked_vd = await page.evaluate("""() => {
+                    for (const el of document.querySelectorAll('a')) {
+                        const h = el.href || '';
+                        if (h.toLowerCase().includes('viewdetail')) {
+                            el.scrollIntoView({block:'center'});
+                            el.click();
+                            return {success: true, text: 'href-match', tag: 'a'};
+                        }
+                    }
+                    return {success: false};
+                }""")
+            
+            if not clicked_vd.get("success"):
                 await browser.close()
                 return {
                     "status": "error",
-                    "error_code": "VIEW_DETAILS_FAILED",
-                    "message": "View Details button not found"
+                    "error_code": "VIEW_DETAILS_CLICK_FAILED",
+                    "message": "Could not click View Details button",
+                    "debug": debug_log
                 }
 
+            debug_log.append(f"View Details clicked: {clicked_vd.get('text')}")
+
+            # ═══ STEP 7: Wait for detail page ═══
             detail_ready = False
-            for _ in range(40):
+            for _ in range(50):  # Increased from 40
                 try:
                     cur = page.url
                     if "viewdetail" in cur.lower():
                         detail_ready = True
+                        debug_log.append(f"Detail URL: {cur[:80]}")
                         break
                 except Exception:
                     pass
@@ -638,6 +728,7 @@ async def run_search(epic):
                     if "viewdetail" in pg.url.lower():
                         page = pg
                         detail_ready = True
+                        debug_log.append(f"Detail URL (new tab): {pg.url[:80]}")
                         break
 
             if not detail_ready:
@@ -645,21 +736,26 @@ async def run_search(epic):
                 return {
                     "status": "error",
                     "error_code": "DETAIL_PAGE_FAILED",
-                    "message": "Detail page not detected"
+                    "message": "Detail page not detected after 10s",
+                    "debug": debug_log
                 }
 
+            # Wait for SPA render
             try:
                 await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
                 pass
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(2000)
 
+            # Get body text
             body = await page.evaluate("() => document.body.innerText")
             if not body or len(body) < 100:
                 await page.wait_for_timeout(2000)
                 body = await page.evaluate("() => document.body.innerText")
 
+            # Extract detail
             d = extract_detail(body)
+            debug_log.append(f"Extracted {len(d)} fields, body length: {len(body) if body else 0}")
 
             await browser.close()
 
@@ -668,6 +764,7 @@ async def run_search(epic):
                 "epic": epic,
                 "detail": d,
                 "raw_length": len(body) if body else 0,
+                "debug": debug_log,
                 "credit": {
                     "username": "@KINGFFAIAK47x",
                     "made_by": "ANSH AFT"
@@ -683,7 +780,8 @@ async def run_search(epic):
                 "status": "error",
                 "error_code": "UNKNOWN_ERROR",
                 "message": str(e)[:200],
-                "traceback": traceback.format_exc()[:500]
+                "traceback": traceback.format_exc()[:500],
+                "debug": debug_log
             }
 
 
@@ -704,8 +802,7 @@ def home():
                 "example": "/api/voterid?key={your_api_key}&epic_number={epic_number}"
             },
             "/health": {
-                "method": "GET",
-                "description": "Health check"
+                "method": "GET"
             }
         },
         "credit": {
@@ -755,10 +852,6 @@ def voterid_path(key, epic):
     return process_voter(epic)
 
 
-# ==============================================
-# CACHE ENDPOINTS
-# ==============================================
-
 @app.route('/cache/stats', methods=['GET'])
 def cache_stats():
     return jsonify({
@@ -775,14 +868,14 @@ def cache_clear():
         success = clear_cache(epic)
         return jsonify({
             "status": "success" if success else "error",
-            "message": f"Cache cleared for {epic}" if success else "Cache entry not found",
+            "message": f"Cache cleared for {epic}" if success else "Not found",
             "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
         })
     else:
         success = clear_cache()
         return jsonify({
             "status": "success" if success else "error",
-            "message": "All cache cleared" if success else "Failed to clear cache",
+            "message": "All cache cleared" if success else "Failed",
             "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
         })
 
@@ -804,7 +897,7 @@ def process_voter(epic):
     epic_clean = result
     start_time = time.time()
     
-    # ⚡ CACHE CHECK FIRST
+    # Cache check
     cached = get_from_cache(epic_clean)
     if cached:
         total_time = round((time.time() - start_time) * 1000, 2)
@@ -812,7 +905,7 @@ def process_voter(epic):
         cached["_from_cache"] = True
         return jsonify(cached), 200
     
-    # ⚡ NO CACHE — Fetch from ECI
+    # Fetch from ECI
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -825,7 +918,6 @@ def process_voter(epic):
         result["response_time"] = f"{total_time}ms"
         result["_from_cache"] = False
         
-        # ⚡ SAVE TO CACHE IF SUCCESS
         if result.get("status") == "success":
             save_to_cache(epic_clean, result)
             return jsonify(result), 200
@@ -842,10 +934,6 @@ def process_voter(epic):
         }), 500
 
 
-# ==============================================
-# HEALTH
-# ==============================================
-
 @app.route('/health', methods=['GET'])
 def health():
     ocr_ok = get_ocr() is not None
@@ -861,10 +949,6 @@ def health():
         "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
     })
 
-
-# ==============================================
-# ERROR HANDLERS
-# ==============================================
 
 @app.errorhandler(404)
 def not_found(error):
@@ -897,23 +981,14 @@ def internal_error(error):
     }), 500
 
 
-# ==============================================
-# MAIN
-# ==============================================
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 60)
-    print("🗳️ ECI VOTER INFO API v1.0.0 (WITH CACHE)")
+    print("🗳️ ECI VOTER INFO API v1.0.0 (FIXED + CACHE)")
     print("=" * 60)
     print(f"🚀 Running on: http://localhost:{port}")
     print(f"💾 Cache dir: {CACHE_DIR}")
-    print(f"⏰ Cache TTL: {CACHE_TTL}s ({CACHE_TTL//3600}h)")
+    print(f"⏰ Cache TTL: {CACHE_TTL}s")
     print("\n🔑 Key: QWM")
-    print("\n📌 Endpoints:")
-    print("  /api/voterid?key=your_api_key&epic_number=ABC1234567")
-    print("  /api/voterid/key=your_api_key/epic_number=ABC1234567")
-    print("  /cache/stats")
-    print("  /cache/clear?epic=ABC1234567")
     print("=" * 60)
     app.run(host='0.0.0.0', port=port, debug=False)
