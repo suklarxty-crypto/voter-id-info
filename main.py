@@ -304,16 +304,12 @@ def extract_detail(body):
 # ==============================================
 
 def combine_names(detail):
-    """
-    Combine first_name + last_name → full_name
-    Combine rel_first + rel_last → relative_full_name
-    """
+    """Combine first+last → full_name, rel_first+rel_last → relative_full_name"""
     if not detail:
         return detail
 
     out = dict(detail)
 
-    # ═══ VOTER FULL NAME ═══
     first = (out.get("first_name") or "").strip()
     last = (out.get("last_name") or "").strip()
 
@@ -325,7 +321,6 @@ def combine_names(detail):
 
     out["full_name"] = " ".join(parts) if parts else "N/A"
 
-    # ═══ RELATIVE FULL NAME ═══
     rel_first = (out.get("rel_first") or "").strip()
     rel_last = (out.get("rel_last") or "").strip()
 
@@ -337,7 +332,6 @@ def combine_names(detail):
 
     out["relative_full_name"] = " ".join(rel_parts) if rel_parts else "N/A"
 
-    # ═══ VOTER NAME WITH RELATIVE ═══
     if parts and rel_parts:
         out["voter_with_relative"] = f"{out['full_name']} S/O {out['relative_full_name']}"
     else:
@@ -352,13 +346,8 @@ def combine_names(detail):
 
 def to_full_field_names(detail):
     """
-    Convert short field keys → full descriptive names.
-    
-    Example:
-      "ps"  → "Polling Station"
-      "psn" → "Part Serial Number"
-      "ac"  → "Assembly Constituency"
-      ...
+    Convert short keys → full descriptive names.
+    Example: ps → Polling Station, psn → Part Serial Number, ac → Assembly Constituency
     """
     if not detail:
         return {}
@@ -385,7 +374,7 @@ def to_full_field_names(detail):
 
     out = {}
     for k, v in detail.items():
-        new_key = FIELD_MAP.get(k, k)   # fallback to original key
+        new_key = FIELD_MAP.get(k, k)
         out[new_key] = v
     return out
 
@@ -474,9 +463,8 @@ async def click_refresh(page):
 # ==============================================
 
 async def find_and_click_vd(page):
-    """Click View Details — same reliable method as s.py"""
+    """Click View Details button"""
 
-    # Method 1: exact text "View Details"
     try:
         ok = await page.evaluate("""() => {
             for (const el of document.querySelectorAll('a, button')) {
@@ -494,7 +482,6 @@ async def find_and_click_vd(page):
     except:
         pass
 
-    # Method 2: any element with exact "View Details"
     try:
         ok = await page.evaluate("""() => {
             for (const el of document.querySelectorAll('span, div, td, a, button')) {
@@ -515,7 +502,6 @@ async def find_and_click_vd(page):
     except:
         pass
 
-    # Method 3: href contains viewdetail
     try:
         ok = await page.evaluate("""() => {
             for (const el of document.querySelectorAll('a[href]')) {
@@ -533,7 +519,6 @@ async def find_and_click_vd(page):
     except:
         pass
 
-    # Method 4: Playwright get_by_text
     try:
         loc = page.get_by_text("View Details", exact=True)
         if await loc.count() > 0:
@@ -579,7 +564,6 @@ async def run_search(epic):
             """)
             await page.route("**/*", block_heavy)
 
-            # ═══ Load page ═══
             try:
                 await page.goto(BASE + "/", wait_until="domcontentloaded", timeout=20000)
             except Exception as e:
@@ -589,7 +573,6 @@ async def run_search(epic):
 
             await page.wait_for_timeout(1000)
 
-            # ═══ EPIC tab ═══
             for sel in ['text=Search by EPIC', 'text=ईपीआईसी द्वारा खोजें',
                         'button:has-text("EPIC")']:
                 try:
@@ -600,7 +583,6 @@ async def run_search(epic):
 
             await page.wait_for_timeout(300)
 
-            # ═══ Fill EPIC ═══
             ok = await page.evaluate("""(epic) => {
                 for (const e of document.querySelectorAll('input')) {
                     const s = (e.placeholder||'') + (e.name||'') + (e.id||'');
@@ -622,7 +604,6 @@ async def run_search(epic):
 
             await page.wait_for_timeout(200)
 
-            # ═══ API response hook ═══
             api_resp = {"data": None}
 
             async def on_resp(resp):
@@ -639,7 +620,6 @@ async def run_search(epic):
 
             page.on("response", on_resp)
 
-            # ═══ Captcha + Search loop ═══
             last_txt = None
             search_done = False
             captcha_attempts = 0
@@ -682,7 +662,6 @@ async def run_search(epic):
 
                 last_txt = text
 
-                # Fill captcha
                 await page.evaluate("""(txt) => {
                     for (const e of document.querySelectorAll('input')) {
                         const s = (e.placeholder||'') + (e.name||'') + (e.id||'');
@@ -700,7 +679,6 @@ async def run_search(epic):
 
                 await page.wait_for_timeout(80)
 
-                # Click SEARCH
                 clicked = await page.evaluate("""() => {
                     for (const b of document.querySelectorAll('button')) {
                         const t = (b.innerText || '').trim();
@@ -718,7 +696,6 @@ async def run_search(epic):
                 api_resp["data"] = None
                 await page.mouse.click(clicked["x"], clicked["y"])
 
-                # Wait for response
                 got = False
                 for _ in range(80):
                     if api_resp["data"]:
@@ -744,7 +721,6 @@ async def run_search(epic):
                 return {"error": "SEARCH_FAILED",
                         "message": f"Search failed after {captcha_attempts} attempts"}
 
-            # ═══ Parse API response ═══
             if api_resp["data"]:
                 has_data, count, err_msg = parse_api_response(api_resp["data"]["body"])
                 if not has_data:
@@ -754,7 +730,6 @@ async def run_search(epic):
                         "message": err_msg or f"No voter record found for EPIC: {epic}"
                     }
 
-            # ═══ Click View Details ═══
             await page.wait_for_timeout(500)
 
             vd_success = False
@@ -782,7 +757,6 @@ async def run_search(epic):
                     "message": "View Details button not found"
                 }
 
-            # ═══ DETAIL PAGE WAIT ═══
             detail_ready = False
 
             for _ in range(60):
@@ -816,14 +790,12 @@ async def run_search(epic):
                     "message": "Detail page not loaded (URL did not change to viewdetail)"
                 }
 
-            # ═══ Wait for SPA render ═══
             try:
                 await page.wait_for_load_state("networkidle", timeout=10000)
             except:
                 pass
             await page.wait_for_timeout(1500)
 
-            # Multi-round body fetch
             body = ""
             for _ in range(5):
                 try:
@@ -844,13 +816,8 @@ async def run_search(epic):
                     "message": "Detail page loaded but body was empty"
                 }
 
-            # ═══ Extract ═══
             d = extract_detail(body)
-
-            # ═══ ⚡ COMBINE NAMES ═══
             d = combine_names(d)
-
-            # ═══ ⚡ RENAME TO FULL FIELD NAMES ═══
             d = to_full_field_names(d)
 
             await browser.close()
@@ -941,7 +908,6 @@ def process_voter(epic):
     epic_clean = result
     start = time.time()
 
-    # Cache
     cached = cache_get(epic_clean)
     if cached:
         cached.pop("_ts", None)
@@ -1019,4 +985,15 @@ def mna(e):
 def ie(e):
     return jsonify({"status": "error", "error_code": "INTERNAL_ERROR",
                     "message": "Internal error",
-                    "
+                    "credit": CREDIT}), 500
+
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    print("=" * 60)
+    print("🗳️ ECI VOTER INFO API v3.3 (FULL NAMES + CREDIT)")
+    print("=" * 60)
+    print(f"🚀 Port: {port}")
+    print("🔑 Key: QWM")
+    print("=" * 60)
+    app.run(host='0.0.0.0', port=port, debug=False)
