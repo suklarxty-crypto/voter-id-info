@@ -1,4 +1,4 @@
-# main.py - ECI Voter Info API (FINAL COMPLETE) — FIXED + CLEAN OUTPUT
+# main.py - ECI Voter Info API (FINAL COMPLETE) — FIXED + CREDIT IN RESPONSE
 # Made by @KINGFFAIAK47x · ANSH AFT
 
 from flask import Flask, jsonify, request
@@ -40,6 +40,12 @@ CAPTCHA_LEN = 6
 CACHE_DIR = "/tmp/eci_cache"
 CACHE_TTL = 86400
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+# ⚡ CREDIT INFO
+CREDIT = {
+    "username": "@KINGFFAIAK47x",
+    "made_by": "ANSH AFT"
+}
 
 _ocr = None
 _pw_mod = None
@@ -143,10 +149,12 @@ def require_api_key(f):
         key = k.get('key', '').strip()
         if not key:
             return jsonify({"status": "error", "error_code": "MISSING_API_KEY",
-                            "message": "API key required"}), 401
+                            "message": "API key required",
+                            "credit": CREDIT}), 401
         if key not in VALID_KEYS:
             return jsonify({"status": "error", "error_code": "INVALID_API_KEY",
-                            "message": "Invalid API key"}), 403
+                            "message": "Invalid API key",
+                            "credit": CREDIT}), 403
         return f(*a, **k)
     return deco
 
@@ -232,269 +240,162 @@ def ocr_multi(img_bytes):
 
 
 # ==============================================
-# ⚡ ECI RAW → CLEAN MAPPER
+# DETAIL EXTRACTION
 # ==============================================
 
-def _get(content, *keys):
-    """Case-insensitive field getter."""
-    if not isinstance(content, dict):
-        return ""
-    for k in keys:
-        for ck in (k, k.lower(), k.upper(), k.capitalize()):
-            if ck in content:
-                v = content[ck]
-                if v is not None and str(v).strip() and str(v).strip().lower() != "null":
-                    return str(v).strip()
-    return ""
+DETAIL_LABELS = [
+    ("first_name", ["प्रथम नाम/First Name", "First Name"]),
+    ("last_name", ["उपनाम/Last Name", "Last Name"]),
+    ("rel_first", ["रिश्तेदार का प्रथम नाम/Relative's First Name", "Relative's First Name"]),
+    ("rel_last", ["रिश्तेदार का उपनाम/Relative's Last Name", "Relative's Last Name"]),
+    ("age", ["उम्र/Age", "Age"]),
+    ("gender", ["लिंग/Gender", "Gender"]),
+    ("epic", ["ईपीआईसी संख्या/EPIC No", "EPIC No"]),
+    ("state", ["राज्य/State", "State"]),
+    ("pc", ["संसदीय निर्वाचन क्षेत्र संख्या - संसदीय निर्वाचन क्षेत्र/Parliamentary Constituency Number-Parliamentary Constituency Name",
+            "Parliamentary Constituency Number-Parliamentary Constituency Name"]),
+    ("ac", ["विधान सभा निर्वाचन क्षेत्र संख्या - विधान सभा निर्वाचन क्षेत्र/Assembly Constituency Number-Assembly Constituency Name",
+            "Assembly Constituency Number-Assembly Constituency Name"]),
+    ("ps", ["मतदान केंद्र/Polling Station", "Polling Station"]),
+    ("part", ["भाग संख्या-भाग का नाम/Part Number-Part Name", "Part Number-Part Name"]),
+    ("psn", ["भाग मतदाता क्रमांक/Part Serial Number", "Part Serial Number"]),
+    ("polling", ["मतदान की तारीख/Polling Date", "Polling Date"]),
+]
+
+STOP_MARKERS = [
+    "Note 1", "Note :", "ऑनलाइन मतदाता पंजीकरण", "Online Voter Registration",
+    "S. No. Designation", "चुनाव अधिकारियों", "Details of Election Officials",
+    "This output is computer generated", "This is not an identity document",
+    "नए मतदाता के", "प्रवासी मतदाता", "मौजूदा निर्वाचकों", "मतदाता सूची में आपत्ति",
+    "सुधार/स्थानांतरण",
+]
 
 
-def _join_en_l1(en, l1):
-    """Join English + regional language with space."""
-    parts = []
-    if en and en.strip():
-        parts.append(en.strip())
-    if l1 and l1.strip() and l1.strip() != en.strip():
-        parts.append(l1.strip())
-    return " ".join(parts).strip()
-
-
-def map_eci_record(rec):
-    """
-    Convert raw ECI record (with content dict) → clean output format.
-
-    Input example:
-      {
-        "content": {"Applicantfirstname": "Sujan", "Applicantfirstnamel1": "সুজন", ...},
-        "id": "53621515_CQJ2509776_S25",
-        "index": "national-electoral-display",
-        "score": 16.45
-      }
-
-    Output:
-      {
-        "ac": "10-Kumargram", "age": "40", "epic": "CQJ2509776",
-        "first_name": "Sujan সুজন", "full_name": "Sujan সুজন Debnath দেবনাথ",
-        ...
-      }
-    """
-    if not rec:
+def extract_detail(body):
+    if not body:
         return {}
-
-    # unwrap content
-    content = rec.get("content") or rec.get("Content") or {}
-    if not isinstance(content, dict) or not content:
-        # maybe the record itself is the content
-        content = rec
-
-    # ═══ Names ═══
-    first_en = _get(content, "Applicantfirstname")
-    first_l1 = _get(content, "Applicantfirstnamel1")
-    first_name = _join_en_l1(first_en, first_l1)
-
-    last_en = _get(content, "Applicantlastname")
-    last_l1 = _get(content, "Applicantlastnamel1")
-    last_name = _join_en_l1(last_en, last_l1)
-
-    # fallback from Fullname
-    if not first_name and not last_name:
-        full_en = _get(content, "Fullname")
-        full_l1 = _get(content, "Fullnamel1")
-        full_name = _join_en_l1(full_en, full_l1)
-        # split into first/last if possible
-        parts = full_name.split()
-        if parts:
-            first_name = parts[0]
-            last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
-    else:
-        full_name = " ".join([x for x in [first_name, last_name] if x]).strip()
-
-    # ═══ Relative names ═══
-    rel_first_en = _get(content, "Relationname")
-    rel_first_l1 = _get(content, "Relationnamel1")
-    rel_first = _join_en_l1(rel_first_en, rel_first_l1)
-
-    rel_last_en = _get(content, "Relationlname")
-    rel_last_l1 = _get(content, "Relationlnamel1")
-    rel_last = _join_en_l1(rel_last_en, rel_last_l1)
-
-    rel_full_en = _get(content, "Relativefullname")
-    rel_full_l1 = _get(content, "Relativefullnamel1")
-    relative_full_name = _join_en_l1(rel_full_en, rel_full_l1)
-
-    # fallback build relative full
-    if not relative_full_name:
-        relative_full_name = " ".join([x for x in [rel_first, rel_last] if x]).strip()
-
-    # ═══ Relation prefix (S/O, D/O, W/O) ═══
-    rel_type = _get(content, "Relationtype").upper()
-    rel_prefix = {
-        "FTHR": "S/O", "FATHER": "S/O", "F": "S/O",
-        "MTHR": "D/O", "MOTHER": "D/O", "M": "D/O",
-        "HUSB": "W/O", "HUSBAND": "W/O", "H": "W/O",
-        "OTHER": "C/O",
-    }.get(rel_type, "S/O")
-
-    if full_name and relative_full_name:
-        voter_with_relative = f"{full_name} {rel_prefix} {relative_full_name}"
-    else:
-        voter_with_relative = full_name or "N/A"
-
-    # ═══ Gender ═══
-    gen_raw = _get(content, "Gender").upper()
-    gender = {
-        "M": "Male", "MALE": "Male",
-        "F": "Female", "FEMALE": "Female",
-        "O": "Other", "T": "Transgender",
-    }.get(gen_raw, gen_raw or "N/A")
-
-    # ═══ PC ═══
-    pc_no = _get(content, "Prlmntno")
-    pc_name = _get(content, "Prlmntname")
-    if pc_no and pc_name:
-        pc = f"{pc_no}-{pc_name}"
-    else:
-        pc = pc_name or pc_no or "N/A"
-
-    # ═══ AC ═══
-    ac_no = _get(content, "Acnumber")
-    ac_name = _get(content, "Asmblyname")
-    if ac_no and ac_name:
-        ac = f"{ac_no}-{ac_name}"
-    else:
-        ac = ac_name or ac_no or "N/A"
-
-    # ═══ Part ═══
-    part_no = _get(content, "Partnumber")
-    part_name = _get(content, "Partname")
-    if part_no and part_name:
-        part = f"{part_no}-{part_name}"
-    else:
-        part = part_name or part_no or "N/A"
-
-    # ═══ PS (Polling Station) — building + room + address ═══
-    ps_building = _get(content, "Psbuildingname") or _get(content, "Partname")
-    ps_room = _get(content, "Psroomdetails")
-    ps_addr = _get(content, "Buildingaddress")
-    ps_parts = [x for x in [ps_building, ps_room, ps_addr] if x]
-    ps = " , ".join(ps_parts) if ps_parts else "N/A"
-
-    # ═══ PSN ═══
-    psn = _get(content, "Partserialnumber") or "N/A"
-
-    # ═══ Polling date ═══
-    polling = _get(content, "PollingDate", "Pollingdate") or "No elections scheduled currently"
-
-    # ═══ Final clean dict ═══
-    clean = {
-        "ac": ac,
-        "age": _get(content, "Age") or "N/A",
-        "epic": _get(content, "Epicnumber") or "N/A",
-        "first_name": first_name or "N/A",
-        "full_name": full_name or "N/A",
-        "gender": gender,
-        "last_name": last_name or "N/A",
-        "part": part,
-        "pc": pc,
-        "polling": polling,
-        "ps": ps,
-        "psn": psn,
-        "rel_first": rel_first or "N/A",
-        "rel_last": rel_last or "N/A",
-        "relative_full_name": relative_full_name or "N/A",
-        "state": _get(content, "Statename") or "N/A",
-        "voter_with_relative": voter_with_relative,
-    }
-
-    # ═══ Extra helpful fields ═══
-    district = _get(content, "Districtvalue")
-    if district:
-        clean["district"] = district
-
-    latlong = _get(content, "Partlatlong", "Part Lat Long")
-    if latlong:
-        clean["part_latlong"] = latlong
-
-    rel_type_raw = _get(content, "Relationtype")
-    if rel_type_raw:
-        clean["relation_type"] = rel_type_raw
-
-    return clean
+    cut = len(body)
+    for m in STOP_MARKERS:
+        i = body.find(m)
+        if i != -1 and i < cut:
+            cut = i
+    body = body[:cut]
+    found = []
+    for key, labels in DETAIL_LABELS:
+        bp, bl = -1, 0
+        for lbl in labels:
+            i = body.find(lbl)
+            if i != -1 and (bp == -1 or i < bp):
+                bp, bl = i, len(lbl)
+        if bp != -1:
+            found.append((bp, key, bl))
+    found.sort()
+    out = {}
+    for i, (pos, key, lblen) in enumerate(found):
+        s = pos + lblen
+        e = found[i+1][0] if i+1 < len(found) else len(body)
+        v = " ".join(body[s:e].split()).strip(" :\t\n-|")
+        out[key] = v
+    return out
 
 
 # ==============================================
-# ⚡ EXTRACT RECORDS FROM API RESPONSE
+# ⚡ FULL NAME COMBINATION
 # ==============================================
 
-def extract_records(body_text):
+def combine_names(detail):
     """
-    Pull list of raw records from ECI API JSON response.
-    Returns (records_list, error_msg)
+    Combine first_name + last_name → full_name
+    Combine rel_first + rel_last → relative_full_name
     """
+    if not detail:
+        return detail
+
+    out = dict(detail)
+
+    # ═══ VOTER FULL NAME ═══
+    first = (out.get("first_name") or "").strip()
+    last = (out.get("last_name") or "").strip()
+
+    parts = []
+    if first and first.upper() not in ("N/A", "NONE", "-"):
+        parts.append(first)
+    if last and last.upper() not in ("N/A", "NONE", "-"):
+        parts.append(last)
+
+    out["full_name"] = " ".join(parts) if parts else "N/A"
+
+    # ═══ RELATIVE FULL NAME ═══
+    rel_first = (out.get("rel_first") or "").strip()
+    rel_last = (out.get("rel_last") or "").strip()
+
+    rel_parts = []
+    if rel_first and rel_first.upper() not in ("N/A", "NONE", "-"):
+        rel_parts.append(rel_first)
+    if rel_last and rel_last.upper() not in ("N/A", "NONE", "-"):
+        rel_parts.append(rel_last)
+
+    out["relative_full_name"] = " ".join(rel_parts) if rel_parts else "N/A"
+
+    # ═══ VOTER NAME WITH RELATIVE ═══
+    if parts and rel_parts:
+        out["voter_with_relative"] = f"{out['full_name']} S/O {out['relative_full_name']}"
+    else:
+        out["voter_with_relative"] = out.get("full_name", "N/A")
+
+    return out
+
+
+# ==============================================
+# ⚡ PARSE API RESPONSE
+# ==============================================
+
+def parse_api_response(body_text):
     if not body_text:
-        return [], "Empty response"
+        return False, 0, "Empty response"
 
     try:
         data = json.loads(body_text)
-    except Exception as e:
-        # Non-JSON → check for known errors
-        low = body_text.lower()
-        if "invalid captcha" in low or "enter valid captcha" in low:
-            return [], "Invalid captcha"
-        if "no data" in low or "not found" in low or "no record" in low:
-            return [], "No voter record found"
-        return [], f"Invalid JSON response: {str(e)[:80]}"
+    except:
+        body_lower = body_text.lower()
+        if any(x in body_lower for x in ["invalid captcha", "enter valid captcha"]):
+            return False, 0, "Invalid captcha"
+        if any(x in body_lower for x in ["no data", "not found", "no record"]):
+            return False, 0, "No data found"
+        return True, 0, None
 
-    # Walk the JSON tree looking for the records list
-    def find_records(node, depth=0):
-        if depth > 6 or node is None:
-            return None
+    if isinstance(data, dict):
+        success = data.get("success", data.get("Success", True))
+        if success is False:
+            msg = data.get("message", data.get("Message", "Request failed"))
+            return False, 0, msg
 
-        if isinstance(node, list):
-            # check if it's list of records (dicts with content-like keys)
-            if node and all(isinstance(x, dict) for x in node):
-                # Heuristic: has "content" key OR looks like a record
-                if any("content" in x or "Content" in x for x in node):
-                    return node
-                # Or has Epicnumber-like keys
-                if any(
-                    any(k in x for k in ("Epicnumber", "epicnumber", "Content", "content"))
-                    for x in node
-                ):
-                    return node
-            # recurse into items
-            for item in node:
-                r = find_records(item, depth + 1)
-                if r:
-                    return r
-            return None
+        records = data.get("data", data.get("result", data.get("records", [])))
 
-        if isinstance(node, dict):
-            # direct hits
-            for key in ("records", "result", "content", "Content", "data", "Data",
-                        "recordsList", "recordslist", "voters"):
-                if key in node:
-                    r = find_records(node[key], depth + 1)
-                    if r:
-                        return r
-            # recurse all values
-            for v in node.values():
-                r = find_records(v, depth + 1)
-                if r:
-                    return r
+        if isinstance(records, list):
+            if len(records) == 0:
+                return False, 0, "No voter records found"
+            return True, len(records), None
 
-        return None
+        if isinstance(records, dict):
+            inner = records.get("data", records.get("result", []))
+            if isinstance(inner, list):
+                if len(inner) == 0:
+                    return False, 0, "No voter records found"
+                return True, len(inner), None
 
-    records = find_records(data)
+        msg = data.get("message", data.get("Message", ""))
+        if msg and any(x in str(msg).lower() for x in ["no", "not found", "invalid"]):
+            return False, 0, str(msg)
 
-    if not records:
-        # check success flag / message
-        if isinstance(data, dict):
-            msg = data.get("message") or data.get("Message") or ""
-            if msg:
-                return [], str(msg)
-        return [], "No voter record found"
+        return True, 0, None
 
-    return records, None
+    if isinstance(data, list):
+        if len(data) == 0:
+            return False, 0, "No voter records found"
+        return True, len(data), None
+
+    return True, 0, None
 
 
 # ==============================================
@@ -525,7 +426,84 @@ async def click_refresh(page):
 
 
 # ==============================================
-# MAIN SEARCH — API response based (no VD click)
+# ⚡ FAST VD CLICKER (simplified & reliable)
+# ==============================================
+
+async def find_and_click_vd(page):
+    """Click View Details — same reliable method as s.py"""
+
+    # Method 1: exact text "View Details" (primary)
+    try:
+        ok = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('a, button')) {
+                const t = (el.innerText || '').trim();
+                if (t === 'View Details') {
+                    el.scrollIntoView({block:'center'});
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if ok:
+            return True, "exact_a_button"
+    except:
+        pass
+
+    # Method 2: any element with exact "View Details"
+    try:
+        ok = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('span, div, td, a, button')) {
+                const t = (el.innerText || '').trim();
+                if (t === 'View Details') {
+                    const r = el.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) {
+                        el.scrollIntoView({block:'center'});
+                        el.click();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }""")
+        if ok:
+            return True, "exact_any"
+    except:
+        pass
+
+    # Method 3: href contains viewdetail
+    try:
+        ok = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('a[href]')) {
+                const h = (el.href || '').toLowerCase();
+                if (h.includes('viewdetail') || h.includes('view-detail')) {
+                    el.scrollIntoView({block:'center'});
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if ok:
+            return True, "href"
+    except:
+        pass
+
+    # Method 4: Playwright get_by_text
+    try:
+        loc = page.get_by_text("View Details", exact=True)
+        if await loc.count() > 0:
+            await loc.first.scroll_into_view_if_needed(timeout=1500)
+            await loc.first.click(timeout=1500)
+            return True, "get_by_text"
+    except:
+        pass
+
+    return False, "none"
+
+
+# ==============================================
+# MAIN SEARCH
 # ==============================================
 
 async def run_search(epic):
@@ -601,14 +579,17 @@ async def run_search(epic):
             await page.wait_for_timeout(200)
 
             # ═══ API response hook ═══
-            api_resp = {"body": None}
+            api_resp = {"data": None}
 
             async def on_resp(resp):
                 try:
                     u = resp.url.lower()
                     if "search-by-epic" in u or "searchbyepic" in u:
                         body_text = await resp.text()
-                        api_resp["body"] = body_text
+                        api_resp["data"] = {
+                            "status": resp.status,
+                            "body": body_text[:5000]
+                        }
                 except:
                     pass
 
@@ -690,13 +671,13 @@ async def run_search(epic):
                 if not clicked:
                     continue
 
-                api_resp["body"] = None
+                api_resp["data"] = None
                 await page.mouse.click(clicked["x"], clicked["y"])
 
-                # Wait for API response
+                # Wait for response
                 got = False
                 for _ in range(80):
-                    if api_resp["body"]:
+                    if api_resp["data"]:
                         got = True
                         break
                     try:
@@ -720,28 +701,122 @@ async def run_search(epic):
                         "message": f"Search failed after {captcha_attempts} attempts"}
 
             # ═══ Parse API response ═══
-            records, err = extract_records(api_resp["body"] or "")
+            if api_resp["data"]:
+                has_data, count, err_msg = parse_api_response(api_resp["data"]["body"])
+                if not has_data:
+                    await browser.close()
+                    return {
+                        "error": "NO_DATA",
+                        "message": err_msg or f"No voter record found for EPIC: {epic}"
+                    }
 
-            if err and not records:
+            # ═══ Click View Details (simple + reliable) ═══
+            await page.wait_for_timeout(500)
+
+            vd_success = False
+            vd_method = ""
+
+            for _ in range(8):
+                ok_vd, method = await find_and_click_vd(page)
+                if ok_vd:
+                    vd_success = True
+                    vd_method = method
+                    break
+                # check if URL already changed
+                try:
+                    if "viewdetail" in page.url.lower():
+                        vd_success = True
+                        vd_method = "url_already"
+                        break
+                except:
+                    pass
+                await page.wait_for_timeout(400)
+
+            if not vd_success:
                 await browser.close()
-                return {"error": "NO_DATA",
-                        "message": err or f"No voter record found for EPIC: {epic}"}
+                return {
+                    "error": "VIEW_DETAILS_FAILED",
+                    "message": "View Details button not found"
+                }
 
-            if not records:
+            # ═══════════════════════════════════════════════
+            # ⚡ DETAIL PAGE WAIT (same approach as s.py)
+            # ═══════════════════════════════════════════════
+            detail_ready = False
+
+            # Primary: wait for URL change (up to 12s)
+            for _ in range(60):
+                try:
+                    if "viewdetail" in page.url.lower() or "view-detail" in page.url.lower():
+                        detail_ready = True
+                        break
+                except:
+                    pass
+                await page.wait_for_timeout(200)
+
+            # Fallback: check if new tab opened
+            if not detail_ready:
+                for _ in range(20):
+                    for pg in ctx.pages:
+                        try:
+                            u = pg.url.lower()
+                            if "viewdetail" in u or "view-detail" in u:
+                                page = pg
+                                detail_ready = True
+                                break
+                        except:
+                            pass
+                    if detail_ready:
+                        break
+                    await page.wait_for_timeout(300)
+
+            if not detail_ready:
                 await browser.close()
-                return {"error": "NO_DATA",
-                        "message": f"No voter record found for EPIC: {epic}"}
+                return {
+                    "error": "DETAIL_PAGE_FAILED",
+                    "message": "Detail page not loaded (URL did not change to viewdetail)"
+                }
 
-            # ═══ Map ALL records to clean format ═══
-            mapped = [map_eci_record(r) for r in records]
+            # ═══ Wait for SPA render ═══
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                pass
+            await page.wait_for_timeout(1500)
+
+            # Multi-round body fetch
+            body = ""
+            for _ in range(5):
+                try:
+                    body = await page.evaluate("() => document.body.innerText")
+                except:
+                    body = ""
+
+                if body and len(body) > 200:
+                    if any(x in body for x in ["First Name", "प्रथम नाम", "EPIC No", "ईपीआईसी"]):
+                        break
+
+                await page.wait_for_timeout(1500)
+
+            if not body or len(body) < 100:
+                await browser.close()
+                return {
+                    "error": "DETAIL_EMPTY",
+                    "message": "Detail page loaded but body was empty"
+                }
+
+            # ═══ Extract ═══
+            d = extract_detail(body)
+
+            # ═══ ⚡ COMBINE NAMES ═══
+            d = combine_names(d)
 
             await browser.close()
 
             return {
-                "detail": mapped[0],
-                "all_records": mapped,
-                "total_records": len(mapped),
-                "raw_count": len(records)
+                "detail": d,
+                "raw_length": len(body) if body else 0,
+                "vd_method": vd_method
             }
 
         except Exception as e:
@@ -760,13 +835,13 @@ async def run_search(epic):
 def home():
     return jsonify({
         "service": "🗳️ ECI Voter Info API",
-        "version": "4.0.0",
+        "version": "3.2.0",
         "endpoints": {
             "/api/voterid": {
                 "example": "/api/voterid?key={your_api_key}&epic_number={epic}"
             }
         },
-        "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
+        "credit": CREDIT
     })
 
 
@@ -777,15 +852,18 @@ def voterid_query():
 
     if not k:
         return jsonify({"status": "error", "error_code": "MISSING_API_KEY",
-                        "message": "API key required"}), 401
+                        "message": "API key required",
+                        "credit": CREDIT}), 401
 
     if k not in VALID_KEYS:
         return jsonify({"status": "error", "error_code": "INVALID_API_KEY",
-                        "message": "Invalid API key"}), 403
+                        "message": "Invalid API key",
+                        "credit": CREDIT}), 403
 
     if not e:
         return jsonify({"status": "error", "error_code": "MISSING_EPIC",
-                        "message": "EPIC number required"}), 400
+                        "message": "EPIC number required",
+                        "credit": CREDIT}), 400
 
     return process_voter(e)
 
@@ -798,21 +876,25 @@ def voterid_path(key, epic):
 
 @app.route('/cache/stats', methods=['GET'])
 def cache_stats_ep():
-    return jsonify(cache_stats())
+    return jsonify({
+        "cache": cache_stats(),
+        "credit": CREDIT
+    })
 
 
 @app.route('/cache/clear', methods=['GET'])
 def cache_clear_ep():
     epic = request.args.get('epic', '').strip().upper()
     ok = cache_clear(epic) if epic else cache_clear()
-    return jsonify({"success": ok})
+    return jsonify({"success": ok, "credit": CREDIT})
 
 
 def process_voter(epic):
     ok, result = validate_epic(epic)
     if not ok:
         return jsonify({"status": "error", "error_code": "INVALID_EPIC",
-                        "message": result}), 400
+                        "message": result,
+                        "credit": CREDIT}), 400
 
     epic_clean = result
     start = time.time()
@@ -823,6 +905,7 @@ def process_voter(epic):
         cached.pop("_ts", None)
         cached["response_time"] = f"{round((time.time()-start)*1000,2)}ms"
         cached["_from_cache"] = True
+        cached["credit"] = CREDIT          # ⚡ always fresh credit
         return jsonify(cached), 200
 
     try:
@@ -840,17 +923,17 @@ def process_voter(epic):
                 "status": "error",
                 "error_code": result["error"],
                 "message": result.get("message", "Failed"),
-                "response_time": f"{total}ms"
+                "response_time": f"{total}ms",
+                "credit": CREDIT
             }), 400
 
         out = {
             "status": "success",
             "epic": epic_clean,
             "detail": result.get("detail", {}),
-            "total_records": result.get("total_records", 1),
-            "all_records": result.get("all_records", [result.get("detail", {})]),
             "response_time": f"{total}ms",
-            "_from_cache": False
+            "_from_cache": False,
+            "credit": CREDIT               # ⚡ credit added here
         }
 
         cache_set(epic_clean, out)
@@ -860,7 +943,8 @@ def process_voter(epic):
         return jsonify({
             "status": "error",
             "error_code": "FATAL_ERROR",
-            "message": str(e)[:200]
+            "message": str(e)[:200],
+            "credit": CREDIT
         }), 500
 
 
@@ -870,32 +954,36 @@ def health():
         "status": "healthy",
         "ocr_loaded": get_ocr() is not None,
         "playwright_loaded": get_pw() is not None,
-        "cache_entries": cache_stats().get("total_entries", 0)
+        "cache_entries": cache_stats().get("total_entries", 0),
+        "credit": CREDIT
     })
 
 
 @app.errorhandler(404)
 def nf(e):
     return jsonify({"status": "error", "error_code": "NOT_FOUND",
-                    "message": "Endpoint not found"}), 404
+                    "message": "Endpoint not found",
+                    "credit": CREDIT}), 404
 
 
 @app.errorhandler(405)
 def mna(e):
     return jsonify({"status": "error", "error_code": "METHOD_NOT_ALLOWED",
-                    "message": "Only GET allowed"}), 405
+                    "message": "Only GET allowed",
+                    "credit": CREDIT}), 405
 
 
 @app.errorhandler(500)
 def ie(e):
     return jsonify({"status": "error", "error_code": "INTERNAL_ERROR",
-                    "message": "Internal error"}), 500
+                    "message": "Internal error",
+                    "credit": CREDIT}), 500
 
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 60)
-    print("🗳️ ECI VOTER INFO API v4.0 (API-RESPONSE BASED)")
+    print("🗳️ ECI VOTER INFO API v3.2 (FINAL + CREDIT)")
     print("=" * 60)
     print(f"🚀 Port: {port}")
     print("🔑 Key: QWM")
