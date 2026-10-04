@@ -1,4 +1,4 @@
-# main.py - ECI Voter Info API (FULLY FIXED)
+# main.py - ECI Voter Info API (FINAL COMPLETE)
 # Made by @KINGFFAIAK47x · ANSH AFT
 
 from flask import Flask, jsonify, request
@@ -17,8 +17,10 @@ from datetime import datetime
 
 app = Flask(__name__)
 
+# ⚡ Suppress ONNX warnings
 os.environ["ONNX_RUNTIME_LOG_LEVEL"] = "3"
 os.environ["ORT_LOGGING_LEVEL"] = "3"
+
 import logging
 logging.getLogger("onnxruntime").setLevel(logging.ERROR)
 
@@ -230,70 +232,6 @@ def ocr_multi(img_bytes):
 
 
 # ==============================================
-# ⚡ NEW: PARSE API RESPONSE PROPERLY
-# ==============================================
-
-def parse_api_response(body_text):
-    """
-    Parse ECI search API response properly
-    Returns: (has_data: bool, records_count: int, error_msg: str or None)
-    """
-    if not body_text:
-        return False, 0, "Empty response"
-    
-    try:
-        data = json.loads(body_text)
-    except:
-        # Not JSON, check as text
-        body_lower = body_text.lower()
-        if any(x in body_lower for x in ["invalid captcha", "enter valid captcha"]):
-            return False, 0, "Invalid captcha"
-        if any(x in body_lower for x in ["no data", "not found", "no record"]):
-            return False, 0, "No data found"
-        # Unknown text — treat as maybe-data
-        return True, 0, None
-    
-    # Handle different response structures
-    if isinstance(data, dict):
-        # Check success flag
-        success = data.get("success", data.get("Success", True))
-        if success is False:
-            msg = data.get("message", data.get("Message", "Request failed"))
-            return False, 0, msg
-        
-        # Check for data/result/records
-        records = data.get("data", data.get("result", data.get("records", [])))
-        
-        if isinstance(records, list):
-            if len(records) == 0:
-                return False, 0, "No voter records found"
-            return True, len(records), None
-        
-        if isinstance(records, dict):
-            # Might be wrapped
-            inner = records.get("data", records.get("result", []))
-            if isinstance(inner, list):
-                if len(inner) == 0:
-                    return False, 0, "No voter records found"
-                return True, len(inner), None
-        
-        # Check for error message
-        msg = data.get("message", data.get("Message", ""))
-        if msg and any(x in str(msg).lower() for x in ["no", "not found", "invalid"]):
-            return False, 0, str(msg)
-        
-        # Unknown structure, might have data
-        return True, 0, None
-    
-    if isinstance(data, list):
-        if len(data) == 0:
-            return False, 0, "No voter records found"
-        return True, len(data), None
-    
-    return True, 0, None
-
-
-# ==============================================
 # DETAIL EXTRACTION
 # ==============================================
 
@@ -354,6 +292,191 @@ def extract_detail(body):
 
 
 # ==============================================
+# ⚡ FULL NAME COMBINATION LOGIC
+# ==============================================
+
+def combine_names(detail):
+    """
+    Combine first_name + last_name → full_name
+    Combine rel_first + rel_last → relative_full_name
+    """
+    if not detail:
+        return detail
+    
+    out = dict(detail)
+    
+    # ═══ VOTER FULL NAME ═══
+    first = (out.get("first_name") or "").strip()
+    last = (out.get("last_name") or "").strip()
+    
+    parts = []
+    if first and first.upper() not in ("N/A", "NONE", "-"):
+        parts.append(first)
+    if last and last.upper() not in ("N/A", "NONE", "-"):
+        parts.append(last)
+    
+    if parts:
+        out["full_name"] = " ".join(parts)
+    else:
+        out["full_name"] = "N/A"
+    
+    # ═══ RELATIVE FULL NAME ═══
+    rel_first = (out.get("rel_first") or "").strip()
+    rel_last = (out.get("rel_last") or "").strip()
+    
+    rel_parts = []
+    if rel_first and rel_first.upper() not in ("N/A", "NONE", "-"):
+        rel_parts.append(rel_first)
+    if rel_last and rel_last.upper() not in ("N/A", "NONE", "-"):
+        rel_parts.append(rel_last)
+    
+    if rel_parts:
+        out["relative_full_name"] = " ".join(rel_parts)
+    else:
+        out["relative_full_name"] = "N/A"
+    
+    # ═══ VOTER NAME WITH RELATIVE ═══
+    # Format: "VOTER NAME S/O RELATIVE NAME"
+    if parts and rel_parts:
+        out["voter_with_relative"] = f"{out['full_name']} S/O {out['relative_full_name']}"
+    else:
+        out["voter_with_relative"] = out.get("full_name", "N/A")
+    
+    # ═══ RELATIVE FULL NAME (l1 style) ═══
+    # If API gives like "Relativefullnamel1" just set alias
+    out["relative_full_name_l1"] = out.get("relative_full_name", "N/A")
+    
+    return out
+
+
+# ==============================================
+# ⚡ SCORE CALCULATOR
+# ==============================================
+
+def calculate_score(detail):
+    """
+    Calculate confidence score based on data completeness
+    Score 0-100
+    """
+    if not detail:
+        return {"score": 0, "grade": "F", "fields_found": 0, "total_fields": 14}
+    
+    # Important fields with weights
+    important_fields = {
+        "full_name": 15,
+        "first_name": 5,
+        "last_name": 5,
+        "relative_full_name": 12,
+        "rel_first": 4,
+        "rel_last": 4,
+        "age": 10,
+        "gender": 8,
+        "epic": 12,
+        "state": 6,
+        "pc": 5,
+        "ac": 5,
+        "ps": 4,
+        "part": 3,
+        "psn": 2,
+        "polling": 2,
+    }
+    
+    score = 0
+    fields_found = 0
+    total = len(important_fields)
+    
+    for field, weight in important_fields.items():
+        val = detail.get(field)
+        if val and str(val).strip() and str(val).upper() not in ("N/A", "NONE", "-", ""):
+            score += weight
+            fields_found += 1
+    
+    # Normalize to 0-100
+    max_score = sum(important_fields.values())
+    normalized_score = round((score / max_score) * 100, 2) if max_score > 0 else 0
+    
+    # Grade
+    if normalized_score >= 90:
+        grade = "A+"
+    elif normalized_score >= 80:
+        grade = "A"
+    elif normalized_score >= 70:
+        grade = "B"
+    elif normalized_score >= 60:
+        grade = "C"
+    elif normalized_score >= 50:
+        grade = "D"
+    elif normalized_score >= 30:
+        grade = "E"
+    else:
+        grade = "F"
+    
+    return {
+        "score": normalized_score,
+        "grade": grade,
+        "fields_found": fields_found,
+        "total_fields": total,
+        "completeness": f"{fields_found}/{total}"
+    }
+
+
+# ==============================================
+# ⚡ PARSE API RESPONSE
+# ==============================================
+
+def parse_api_response(body_text):
+    """
+    Parse ECI search API response properly
+    Returns: (has_data: bool, records_count: int, error_msg: str or None)
+    """
+    if not body_text:
+        return False, 0, "Empty response"
+    
+    try:
+        data = json.loads(body_text)
+    except:
+        body_lower = body_text.lower()
+        if any(x in body_lower for x in ["invalid captcha", "enter valid captcha"]):
+            return False, 0, "Invalid captcha"
+        if any(x in body_lower for x in ["no data", "not found", "no record"]):
+            return False, 0, "No data found"
+        return True, 0, None
+    
+    if isinstance(data, dict):
+        success = data.get("success", data.get("Success", True))
+        if success is False:
+            msg = data.get("message", data.get("Message", "Request failed"))
+            return False, 0, msg
+        
+        records = data.get("data", data.get("result", data.get("records", [])))
+        
+        if isinstance(records, list):
+            if len(records) == 0:
+                return False, 0, "No voter records found"
+            return True, len(records), None
+        
+        if isinstance(records, dict):
+            inner = records.get("data", records.get("result", []))
+            if isinstance(inner, list):
+                if len(inner) == 0:
+                    return False, 0, "No voter records found"
+                return True, len(inner), None
+        
+        msg = data.get("message", data.get("Message", ""))
+        if msg and any(x in str(msg).lower() for x in ["no", "not found", "invalid"]):
+            return False, 0, str(msg)
+        
+        return True, 0, None
+    
+    if isinstance(data, list):
+        if len(data) == 0:
+            return False, 0, "No voter records found"
+        return True, len(data), None
+    
+    return True, 0, None
+
+
+# ==============================================
 # BROWSER HELPERS
 # ==============================================
 
@@ -381,11 +504,11 @@ async def click_refresh(page):
 
 
 # ==============================================
-# FAST VD CLICKER - 5 METHODS ONLY
+# ⚡ FAST VD CLICKER
 # ==============================================
 
 async def find_and_click_vd(page):
-    """Fast VD clicker - 5 methods only"""
+    """Fast VD clicker - 5 methods"""
     
     # Method 1: JavaScript exact text
     try:
@@ -436,7 +559,7 @@ async def find_and_click_vd(page):
     except:
         pass
     
-    # Method 4: Case insensitive JS
+    # Method 4: Case insensitive
     try:
         result = await page.evaluate("""() => {
             for (const el of document.querySelectorAll('button, a')) {
@@ -453,7 +576,7 @@ async def find_and_click_vd(page):
     except:
         pass
     
-    # Method 5: href check
+    # Method 5: href selector
     try:
         links = await page.query_selector_all('a[href*="viewdetail" i]')
         if links:
@@ -499,7 +622,7 @@ async def run_search(epic):
             """)
             await page.route("**/*", block_heavy)
 
-            # Load page
+            # ═══ Load page ═══
             try:
                 await page.goto(BASE + "/", wait_until="domcontentloaded", timeout=20000)
             except Exception as e:
@@ -509,7 +632,7 @@ async def run_search(epic):
 
             await page.wait_for_timeout(1000)
 
-            # EPIC tab
+            # ═══ EPIC tab ═══
             for sel in ['text=Search by EPIC', 'text=ईपीआईसी द्वारा खोजें',
                         'button:has-text("EPIC")']:
                 try:
@@ -520,7 +643,7 @@ async def run_search(epic):
 
             await page.wait_for_timeout(300)
 
-            # Fill EPIC
+            # ═══ Fill EPIC ═══
             ok = await page.evaluate("""(epic) => {
                 for (const e of document.querySelectorAll('input')) {
                     const s = (e.placeholder||'') + (e.name||'') + (e.id||'');
@@ -542,7 +665,7 @@ async def run_search(epic):
 
             await page.wait_for_timeout(200)
 
-            # API response hook
+            # ═══ API response hook ═══
             api_resp = {"data": None}
 
             async def on_resp(resp):
@@ -552,14 +675,14 @@ async def run_search(epic):
                         body_text = await resp.text()
                         api_resp["data"] = {
                             "status": resp.status,
-                            "body": body_text[:5000]  # ← FULL BODY
+                            "body": body_text[:5000]
                         }
                 except:
                     pass
 
             page.on("response", on_resp)
 
-            # Captcha loop
+            # ═══ Captcha + Search loop ═══
             last_txt = None
             search_done = False
             captcha_attempts = 0
@@ -638,7 +761,7 @@ async def run_search(epic):
                 api_resp["data"] = None
                 await page.mouse.click(clicked["x"], clicked["y"])
 
-                # Wait for API response
+                # Wait for response
                 got = False
                 for _ in range(80):
                     if api_resp["data"]:
@@ -664,12 +787,9 @@ async def run_search(epic):
                 return {"error": "SEARCH_FAILED",
                         "message": f"Search failed after {captcha_attempts} attempts"}
 
-            # ═══════════════════════════════════════════════
-            # ⚡ CRITICAL FIX: PARSE API RESPONSE
-            # ═══════════════════════════════════════════════
+            # ═══ Parse API response ═══
             if api_resp["data"]:
                 has_data, count, err_msg = parse_api_response(api_resp["data"]["body"])
-                
                 if not has_data:
                     await browser.close()
                     return {
@@ -677,10 +797,7 @@ async def run_search(epic):
                         "message": err_msg or f"No voter record found for EPIC: {epic}"
                     }
             
-            # ═══════════════════════════════════════════════
-            # ⚡ FAST VD CLICK - 3 ROUNDS MAX
-            # ═══════════════════════════════════════════════
-            
+            # ═══ Fast VD Click - 3 Rounds ═══
             vd_success = False
             vd_method = ""
             
@@ -746,47 +863,88 @@ async def run_search(epic):
                 }
 
             # ═══════════════════════════════════════════════
-            # WAIT FOR DETAIL PAGE
+            # ⚡ FIXED: DETAIL PAGE WAIT (MULTI-ROUND)
             # ═══════════════════════════════════════════════
             detail_ready = False
-            for _ in range(40):
+            
+            # Round 1: Check URL change (up to 10s)
+            for _ in range(50):
                 try:
                     if "viewdetail" in page.url.lower():
                         detail_ready = True
                         break
                 except:
                     pass
-                await page.wait_for_timeout(150)
-
+                await page.wait_for_timeout(200)
+            
+            # Round 2: Check all tabs (new tab may open)
             if not detail_ready:
-                for pg in ctx.pages:
-                    if "viewdetail" in pg.url.lower():
-                        page = pg
-                        detail_ready = True
+                for _ in range(20):
+                    for pg in ctx.pages:
+                        try:
+                            if "viewdetail" in pg.url.lower():
+                                page = pg
+                                detail_ready = True
+                                break
+                        except:
+                            pass
+                    if detail_ready:
                         break
+                    await page.wait_for_timeout(300)
+            
+            # Round 3: Wait more if still not loaded
+            if not detail_ready:
+                for _ in range(30):
+                    try:
+                        cur = page.url
+                        if "viewdetail" in cur.lower() or "view-detail" in cur.lower():
+                            detail_ready = True
+                            break
+                    except:
+                        pass
+                    await page.wait_for_timeout(500)
 
             if not detail_ready:
                 await browser.close()
-                return {"error": "DETAIL_PAGE_FAILED",
-                        "message": "Detail page not loaded"}
+                return {
+                    "error": "DETAIL_PAGE_FAILED",
+                    "message": "Detail page not loaded after 25s wait"
+                }
 
-            # Wait for SPA render
+            # ═══ Wait for SPA render ═══
             try:
-                await page.wait_for_load_state("networkidle", timeout=6000)
+                await page.wait_for_load_state("networkidle", timeout=8000)
             except:
                 pass
-            await page.wait_for_timeout(1800)
-
-            body = await page.evaluate("() => document.body.innerText")
-            if not body or len(body) < 100:
+            
+            # Multi-round body check
+            body = ""
+            for _ in range(5):
                 await page.wait_for_timeout(1500)
-                body = await page.evaluate("() => document.body.innerText")
+                try:
+                    body = await page.evaluate("() => document.body.innerText")
+                except:
+                    body = ""
+                
+                if body and len(body) > 200:
+                    # Check if it has actual data
+                    if any(x in body for x in ["First Name", "प्रथम नाम", "EPIC No", "ईपीआईसी"]):
+                        break
 
+            # ═══ Extract ═══
             d = extract_detail(body)
+            
+            # ═══ ⚡ COMBINE NAMES ═══
+            d = combine_names(d)
+            
+            # ═══ ⚡ CALCULATE SCORE ═══
+            score_data = calculate_score(d)
+            
             await browser.close()
 
             return {
                 "detail": d,
+                "score": score_data,
                 "raw_length": len(body) if body else 0,
                 "vd_method": vd_method
             }
@@ -807,7 +965,7 @@ async def run_search(epic):
 def home():
     return jsonify({
         "service": "🗳️ ECI Voter Info API",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "endpoints": {
             "/api/voterid": {
                 "example": "/api/voterid?key={your_api_key}&epic_number={epic}"
@@ -864,6 +1022,7 @@ def process_voter(epic):
     epic_clean = result
     start = time.time()
     
+    # Cache
     cached = cache_get(epic_clean)
     if cached:
         cached.pop("_ts", None)
@@ -893,6 +1052,7 @@ def process_voter(epic):
             "status": "success",
             "epic": epic_clean,
             "detail": result.get("detail", {}),
+            "score": result.get("score", {}),
             "response_time": f"{total}ms",
             "_from_cache": False
         }
@@ -939,7 +1099,7 @@ def ie(e):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 60)
-    print("🗳️ ECI VOTER INFO API v2.0 (FULLY FIXED)")
+    print("🗳️ ECI VOTER INFO API v3.0 (FINAL COMPLETE)")
     print("=" * 60)
     print(f"🚀 Port: {port}")
     print("🔑 Key: QWM")
