@@ -1,4 +1,4 @@
-# main.py - ECI Voter Info API (FINAL COMPLETE) — FIXED + CREDIT IN RESPONSE
+# main.py - ECI Voter Info API (FINAL COMPLETE) — FULL FIELD NAMES + CREDIT
 # Made by @KINGFFAIAK47x · ANSH AFT
 
 from flask import Flask, jsonify, request
@@ -347,6 +347,50 @@ def combine_names(detail):
 
 
 # ==============================================
+# ⚡ RENAME TO FULL FIELD NAMES
+# ==============================================
+
+def to_full_field_names(detail):
+    """
+    Convert short field keys → full descriptive names.
+    
+    Example:
+      "ps"  → "Polling Station"
+      "psn" → "Part Serial Number"
+      "ac"  → "Assembly Constituency"
+      ...
+    """
+    if not detail:
+        return {}
+
+    FIELD_MAP = {
+        "first_name":          "First Name",
+        "last_name":           "Last Name",
+        "full_name":           "Full Name",
+        "rel_first":           "Relative's First Name",
+        "rel_last":            "Relative's Last Name",
+        "relative_full_name":  "Relative Full Name",
+        "voter_with_relative": "Voter With Relative",
+        "age":                 "Age",
+        "gender":              "Gender",
+        "epic":                "EPIC Number",
+        "state":               "State",
+        "pc":                  "Parliamentary Constituency",
+        "ac":                  "Assembly Constituency",
+        "ps":                  "Polling Station",
+        "part":                "Part Number-Part Name",
+        "psn":                 "Part Serial Number",
+        "polling":             "Polling Date",
+    }
+
+    out = {}
+    for k, v in detail.items():
+        new_key = FIELD_MAP.get(k, k)   # fallback to original key
+        out[new_key] = v
+    return out
+
+
+# ==============================================
 # ⚡ PARSE API RESPONSE
 # ==============================================
 
@@ -426,13 +470,13 @@ async def click_refresh(page):
 
 
 # ==============================================
-# ⚡ FAST VD CLICKER (simplified & reliable)
+# ⚡ FAST VD CLICKER
 # ==============================================
 
 async def find_and_click_vd(page):
     """Click View Details — same reliable method as s.py"""
 
-    # Method 1: exact text "View Details" (primary)
+    # Method 1: exact text "View Details"
     try:
         ok = await page.evaluate("""() => {
             for (const el of document.querySelectorAll('a, button')) {
@@ -710,7 +754,7 @@ async def run_search(epic):
                         "message": err_msg or f"No voter record found for EPIC: {epic}"
                     }
 
-            # ═══ Click View Details (simple + reliable) ═══
+            # ═══ Click View Details ═══
             await page.wait_for_timeout(500)
 
             vd_success = False
@@ -722,7 +766,6 @@ async def run_search(epic):
                     vd_success = True
                     vd_method = method
                     break
-                # check if URL already changed
                 try:
                     if "viewdetail" in page.url.lower():
                         vd_success = True
@@ -739,12 +782,9 @@ async def run_search(epic):
                     "message": "View Details button not found"
                 }
 
-            # ═══════════════════════════════════════════════
-            # ⚡ DETAIL PAGE WAIT (same approach as s.py)
-            # ═══════════════════════════════════════════════
+            # ═══ DETAIL PAGE WAIT ═══
             detail_ready = False
 
-            # Primary: wait for URL change (up to 12s)
             for _ in range(60):
                 try:
                     if "viewdetail" in page.url.lower() or "view-detail" in page.url.lower():
@@ -754,7 +794,6 @@ async def run_search(epic):
                     pass
                 await page.wait_for_timeout(200)
 
-            # Fallback: check if new tab opened
             if not detail_ready:
                 for _ in range(20):
                     for pg in ctx.pages:
@@ -811,6 +850,9 @@ async def run_search(epic):
             # ═══ ⚡ COMBINE NAMES ═══
             d = combine_names(d)
 
+            # ═══ ⚡ RENAME TO FULL FIELD NAMES ═══
+            d = to_full_field_names(d)
+
             await browser.close()
 
             return {
@@ -835,7 +877,7 @@ async def run_search(epic):
 def home():
     return jsonify({
         "service": "🗳️ ECI Voter Info API",
-        "version": "3.2.0",
+        "version": "3.3.0",
         "endpoints": {
             "/api/voterid": {
                 "example": "/api/voterid?key={your_api_key}&epic_number={epic}"
@@ -905,7 +947,7 @@ def process_voter(epic):
         cached.pop("_ts", None)
         cached["response_time"] = f"{round((time.time()-start)*1000,2)}ms"
         cached["_from_cache"] = True
-        cached["credit"] = CREDIT          # ⚡ always fresh credit
+        cached["credit"] = CREDIT
         return jsonify(cached), 200
 
     try:
@@ -933,7 +975,7 @@ def process_voter(epic):
             "detail": result.get("detail", {}),
             "response_time": f"{total}ms",
             "_from_cache": False,
-            "credit": CREDIT               # ⚡ credit added here
+            "credit": CREDIT
         }
 
         cache_set(epic_clean, out)
@@ -977,15 +1019,4 @@ def mna(e):
 def ie(e):
     return jsonify({"status": "error", "error_code": "INTERNAL_ERROR",
                     "message": "Internal error",
-                    "credit": CREDIT}), 500
-
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    print("=" * 60)
-    print("🗳️ ECI VOTER INFO API v3.2 (FINAL + CREDIT)")
-    print("=" * 60)
-    print(f"🚀 Port: {port}")
-    print("🔑 Key: QWM")
-    print("=" * 60)
-    app.run(host='0.0.0.0', port=port, debug=False)
+                    "
