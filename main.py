@@ -1,4 +1,4 @@
-# main.py - ECI Voter Info API (Render Docker + Cache + FIXED)
+# main.py - ECI Voter Info API (Clean + Fast + Cache)
 # Made by @KINGFFAIAK47x · ANSH AFT
 
 from flask import Flask, jsonify, request
@@ -15,24 +15,13 @@ from functools import wraps
 from collections import Counter
 from datetime import datetime
 
-# ==============================================
-# 🗳️ ECI VOTER INFO API
-# Made by @KINGFFAIAK47x · ANSH AFT
-# ==============================================
-
 app = Flask(__name__)
 
 # ==============================================
-# API KEYS (HIDDEN)
+# CONFIG
 # ==============================================
 
-VALID_KEYS = {
-    "QWM": "full_access"
-}
-
-# ==============================================
-# CONSTANTS
-# ==============================================
+VALID_KEYS = {"QWM": "full_access"}
 
 BASE = "https://electoralsearch.eci.gov.in"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -41,20 +30,13 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 
 CAPTCHA_LEN = 6
 
-# ==============================================
-# CACHE CONFIG
-# ==============================================
-
 CACHE_DIR = "/tmp/eci_cache"
-CACHE_TTL = 86400  # 24 hours
+CACHE_TTL = 86400
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# ==============================================
-# LAZY LOADERS
-# ==============================================
-
+# Lazy loaders
 _ocr = None
-_playwright_mod = None
+_pw_mod = None
 
 
 def get_ocr():
@@ -63,163 +45,117 @@ def get_ocr():
         try:
             import ddddocr
             _ocr = ddddocr.DdddOcr(show_ad=False)
-            print("✅ ddddocr loaded")
-        except Exception as e:
-            print(f"❌ ddddocr load failed: {e}")
+        except:
             return None
     return _ocr
 
 
-def get_playwright():
-    global _playwright_mod
-    if _playwright_mod is None:
+def get_pw():
+    global _pw_mod
+    if _pw_mod is None:
         try:
             from playwright.async_api import async_playwright
-            _playwright_mod = async_playwright
-            print("✅ Playwright loaded")
-        except Exception as e:
-            print(f"❌ Playwright load failed: {e}")
+            _pw_mod = async_playwright
+        except:
             return None
-    return _playwright_mod
+    return _pw_mod
 
 
 # ==============================================
-# CACHE FUNCTIONS
+# CACHE
 # ==============================================
 
-def get_cache_path(epic):
-    hash_name = hashlib.md5(epic.encode()).hexdigest()
-    return os.path.join(CACHE_DIR, f"{hash_name}.json")
+def _cp(epic):
+    return os.path.join(CACHE_DIR, f"{hashlib.md5(epic.encode()).hexdigest()}.json")
 
 
-def get_from_cache(epic):
-    path = get_cache_path(epic)
-    if not os.path.exists(path):
+def cache_get(epic):
+    p = _cp(epic)
+    if not os.path.exists(p):
         return None
-    
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        
-        cached_at = data.get("_cached_at_ts", 0)
-        if time.time() - cached_at > CACHE_TTL:
+        with open(p, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if time.time() - d.get("_ts", 0) > CACHE_TTL:
             try:
-                os.remove(path)
+                os.remove(p)
             except:
                 pass
             return None
-        
-        return data
+        return d
     except:
         return None
 
 
-def save_to_cache(epic, data):
+def cache_set(epic, data):
     try:
-        cache_data = data.copy()
-        cache_data["_cached_at_ts"] = time.time()
-        cache_data["_cached_at"] = datetime.now().isoformat()
-        
-        path = get_cache_path(epic)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cache_data, f, ensure_ascii=False)
+        c = data.copy()
+        c["_ts"] = time.time()
+        with open(_cp(epic), "w", encoding="utf-8") as f:
+            json.dump(c, f, ensure_ascii=False)
         return True
     except:
         return False
 
 
-def clear_cache(epic=None):
+def cache_clear(epic=None):
     if epic:
-        path = get_cache_path(epic)
-        if os.path.exists(path):
+        p = _cp(epic)
+        if os.path.exists(p):
             try:
-                os.remove(path)
+                os.remove(p)
                 return True
             except:
-                return False
-        return False
-    else:
-        try:
-            for f in os.listdir(CACHE_DIR):
-                if f.endswith(".json"):
-                    os.remove(os.path.join(CACHE_DIR, f))
-            return True
-        except:
-            return False
-
-
-def get_cache_stats():
-    try:
-        files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json")]
-        total_size = 0
-        for f in files:
-            try:
-                total_size += os.path.getsize(os.path.join(CACHE_DIR, f))
-            except:
                 pass
-        
-        return {
-            "total_entries": len(files),
-            "total_size_bytes": total_size,
-            "total_size_kb": round(total_size / 1024, 2),
-            "cache_dir": CACHE_DIR,
-            "ttl_seconds": CACHE_TTL
-        }
+        return False
+    try:
+        for f in os.listdir(CACHE_DIR):
+            if f.endswith(".json"):
+                os.remove(os.path.join(CACHE_DIR, f))
+        return True
+    except:
+        return False
+
+
+def cache_stats():
+    try:
+        fs = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json")]
+        sz = sum(os.path.getsize(os.path.join(CACHE_DIR, f)) for f in fs)
+        return {"total_entries": len(fs), "size_kb": round(sz / 1024, 2),
+                "ttl_seconds": CACHE_TTL}
     except Exception as e:
         return {"error": str(e)}
 
 
 # ==============================================
-# AUTHENTICATION
+# AUTH
 # ==============================================
 
 def require_api_key(f):
     @wraps(f)
-    def decorated_function(*args, **kwargs):
-        api_key = kwargs.get('key', '').strip()
-        
-        if not api_key:
-            return jsonify({
-                "status": "error",
-                "error_code": "MISSING_API_KEY",
-                "message": "API key required",
-                "usage": "/api/voterid?key={your_api_key}&epic_number={epic}",
-                "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-            }), 401
-        
-        if api_key not in VALID_KEYS:
-            return jsonify({
-                "status": "error",
-                "error_code": "INVALID_API_KEY",
-                "message": "Invalid API key",
-                "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-            }), 403
-        
-        return f(*args, **kwargs)
-    return decorated_function
+    def deco(*a, **k):
+        key = k.get('key', '').strip()
+        if not key:
+            return jsonify({"status": "error", "error_code": "MISSING_API_KEY",
+                            "message": "API key required"}), 401
+        if key not in VALID_KEYS:
+            return jsonify({"status": "error", "error_code": "INVALID_API_KEY",
+                            "message": "Invalid API key"}), 403
+        return f(*a, **k)
+    return deco
 
 
-# ==============================================
-# VALIDATION
-# ==============================================
-
-def validate_epic(epic):
-    if not epic:
-        return False, "EPIC number required"
-    
-    epic = str(epic).strip().upper()
-    epic = re.sub(r'\s+', '', epic)
-    
-    if len(epic) < 3:
-        return False, "EPIC number too short (min 3 chars)"
-    
-    if len(epic) > 20:
-        return False, "EPIC number too long (max 20 chars)"
-    
-    if not re.match(r'^[A-Z0-9]+$', epic):
-        return False, "EPIC must contain only letters and numbers"
-    
-    return True, epic
+def validate_epic(e):
+    if not e:
+        return False, "EPIC required"
+    e = re.sub(r'\s+', '', str(e).strip().upper())
+    if len(e) < 3:
+        return False, "EPIC too short"
+    if len(e) > 20:
+        return False, "EPIC too long"
+    if not re.match(r'^[A-Z0-9]+$', e):
+        return False, "EPIC must be alphanumeric"
+    return True, e
 
 
 # ==============================================
@@ -230,9 +166,8 @@ def preprocess(img_bytes, mode=0):
     try:
         from PIL import Image, ImageOps, ImageFilter
         img = Image.open(io.BytesIO(img_bytes))
-    except Exception:
+    except:
         return None
-    
     if img.mode != "RGB":
         img = img.convert("RGB")
     if mode == 0:
@@ -258,46 +193,34 @@ def preprocess(img_bytes, mode=0):
     return g
 
 
-def clean_ocr(txt):
-    if not txt:
-        return ""
-    return "".join(c for c in txt if c.isalnum())
-
-
 def ocr_multi(img_bytes):
     ocr = get_ocr()
     if not ocr or not img_bytes:
         return ""
-    
     results = []
-    
     try:
-        r0 = clean_ocr(ocr.classification(img_bytes))
+        r0 = "".join(c for c in (ocr.classification(img_bytes) or "") if c.isalnum())
         if r0:
             results.append(r0)
-    except Exception:
+    except:
         pass
-    
     for mode in (1, 2, 3, 4, 5):
         try:
-            pimg = preprocess(img_bytes, mode)
-            if pimg is None:
+            p = preprocess(img_bytes, mode)
+            if p is None:
                 continue
             buf = io.BytesIO()
-            pimg.save(buf, format="PNG")
-            r = clean_ocr(ocr.classification(buf.getvalue()))
+            p.save(buf, format="PNG")
+            r = "".join(c for c in (ocr.classification(buf.getvalue()) or "") if c.isalnum())
             if r:
                 results.append(r)
-        except Exception:
+        except:
             continue
-    
     if not results:
         return ""
-    
     valid = [r for r in results if len(r) == CAPTCHA_LEN]
     if valid:
         return Counter(valid).most_common(1)[0][0]
-    
     results.sort(key=len, reverse=True)
     return results[0]
 
@@ -337,7 +260,6 @@ STOP_MARKERS = [
 def extract_detail(body):
     if not body:
         return {}
-    
     cut = len(body)
     for m in STOP_MARKERS:
         i = body.find(m)
@@ -372,7 +294,8 @@ async def block_heavy(route):
     if any(x in u for x in [".woff", ".woff2", ".ttf", ".eot",
                              "google-analytics", "gtag", "hotjar",
                              "facebook", "doubleclick", "clarity.ms",
-                             "googletagmanager"]):
+                             "googletagmanager", ".png", ".jpg", ".jpeg",
+                             ".gif", ".svg", ".webp", ".mp4"]):
         await route.abort()
     else:
         await route.continue_()
@@ -383,29 +306,23 @@ async def click_refresh(page):
         el = await page.query_selector('i.fa-rotate-right, i[class*="rotate"]')
         if el:
             await el.click()
-            await page.wait_for_timeout(300)
+            await page.wait_for_timeout(200)
             return
-    except Exception:
+    except:
         pass
-    await page.wait_for_timeout(300)
+    await page.wait_for_timeout(200)
 
 
 # ==============================================
-# MAIN SEARCH FLOW - FIXED
+# MAIN SEARCH
 # ==============================================
 
 async def run_search(epic):
-    async_playwright = get_playwright()
-    if not async_playwright:
-        return {
-            "status": "error",
-            "error_code": "PLAYWRIGHT_MISSING",
-            "message": "Playwright not installed"
-        }
+    pw = get_pw()
+    if not pw:
+        return {"error": "PLAYWRIGHT_MISSING", "message": "Playwright not installed"}
     
-    debug_log = []
-    
-    async with async_playwright() as p:
+    async with pw() as p:
         browser = await p.chromium.launch(
             headless=True,
             args=[
@@ -414,7 +331,6 @@ async def run_search(epic):
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--single-process",
-                "--disable-images",  # Faster loading
             ],
         )
         
@@ -431,35 +347,28 @@ async def run_search(epic):
             """)
             await page.route("**/*", block_heavy)
 
-            # ═══ STEP 1: Load page ═══
-            debug_log.append("Loading page...")
+            # Load page
             try:
                 await page.goto(BASE + "/", wait_until="domcontentloaded", timeout=20000)
             except Exception as e:
                 await browser.close()
-                return {
-                    "status": "error",
-                    "error_code": "PAGE_LOAD_FAILED",
-                    "message": f"Failed to load ECI page: {str(e)[:150]}",
-                    "debug": debug_log
-                }
+                return {"error": "PAGE_LOAD_FAILED",
+                        "message": f"Load failed: {str(e)[:150]}"}
 
-            await page.wait_for_timeout(1500)  # Increased
-            debug_log.append("Page loaded")
+            await page.wait_for_timeout(1200)
 
-            # ═══ STEP 2: Click EPIC tab ═══
+            # EPIC tab
             for sel in ['text=Search by EPIC', 'text=ईपीआईसी द्वारा खोजें',
                         'button:has-text("EPIC")']:
                 try:
-                    await page.click(sel, timeout=1000)
-                    debug_log.append(f"EPIC tab clicked: {sel}")
+                    await page.click(sel, timeout=800)
                     break
-                except Exception:
+                except:
                     continue
 
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(300)
 
-            # ═══ STEP 3: Fill EPIC ═══
+            # Fill EPIC
             ok = await page.evaluate("""(epic) => {
                 for (const e of document.querySelectorAll('input')) {
                     const s = (e.placeholder||'') + (e.name||'') + (e.id||'');
@@ -477,38 +386,31 @@ async def run_search(epic):
 
             if not ok:
                 await browser.close()
-                return {
-                    "status": "error",
-                    "error_code": "EPIC_FILL_FAILED",
-                    "message": "Could not fill EPIC field",
-                    "debug": debug_log
-                }
+                return {"error": "EPIC_FILL_FAILED", "message": "EPIC field not found"}
 
-            debug_log.append(f"EPIC filled: {epic}")
-            await page.wait_for_timeout(300)
+            await page.wait_for_timeout(200)
 
-            # ═══ STEP 4: Captcha + Search ═══
-            search_ok = {"v": False}
+            # Response hook
+            api_resp = {"data": None}
 
             async def on_resp(resp):
                 try:
                     u = resp.url.lower()
-                    if resp.status == 200 and ("search-by-epic" in u or "searchbyepic" in u):
-                        search_ok["v"] = True
-                except Exception:
+                    if "search-by-epic" in u or "searchbyepic" in u:
+                        api_resp["data"] = {
+                            "status": resp.status,
+                            "body": (await resp.text())[:1000]
+                        }
+                except:
                     pass
 
             page.on("response", on_resp)
 
+            # Captcha loop
             last_txt = None
             search_done = False
-            captcha_attempts = 0
-            max_attempts = 15
 
-            for attempt in range(1, max_attempts + 1):
-                captcha_attempts = attempt
-                debug_log.append(f"Captcha attempt {attempt}")
-
+            for attempt in range(1, 16):
                 cap_src = await page.evaluate("""() => {
                     for (const img of document.querySelectorAll('img')) {
                         const s = img.src || '';
@@ -522,13 +424,13 @@ async def run_search(epic):
                 }""")
 
                 if not cap_src:
-                    await page.wait_for_timeout(300)
+                    await page.wait_for_timeout(250)
                     continue
 
                 img_b64 = cap_src.split(",", 1)[1] if "," in cap_src else cap_src
                 try:
                     img_bytes = base64.b64decode(img_b64)
-                except Exception:
+                except:
                     continue
 
                 text = ocr_multi(img_bytes)
@@ -543,7 +445,6 @@ async def run_search(epic):
                     continue
 
                 last_txt = text
-                debug_log.append(f"OCR: {text}")
 
                 # Fill captcha
                 await page.evaluate("""(txt) => {
@@ -561,7 +462,7 @@ async def run_search(epic):
                     return false;
                 }""", text)
 
-                await page.wait_for_timeout(100)
+                await page.wait_for_timeout(80)
 
                 # Click SEARCH
                 clicked = await page.evaluate("""() => {
@@ -578,12 +479,13 @@ async def run_search(epic):
                 if not clicked:
                     continue
 
-                search_ok["v"] = False
+                api_resp["data"] = None
                 await page.mouse.click(clicked["x"], clicked["y"])
 
+                # Wait for response
                 got = False
-                for _ in range(60):  # Increased from 50
-                    if search_ok["v"]:
+                for _ in range(80):
+                    if api_resp["data"]:
                         got = True
                         break
                     try:
@@ -591,12 +493,11 @@ async def run_search(epic):
                             "() => /invalid captcha|enter valid captcha/i.test(document.body.innerText)")
                         if err:
                             break
-                    except Exception:
+                    except:
                         pass
                     await page.wait_for_timeout(100)
 
                 if got:
-                    debug_log.append(f"Search success on attempt {attempt}")
                     search_done = True
                     break
 
@@ -604,185 +505,113 @@ async def run_search(epic):
 
             if not search_done:
                 await browser.close()
-                return {
-                    "status": "error",
-                    "error_code": "SEARCH_FAILED",
-                    "message": f"Search failed after {captcha_attempts} attempts. Captcha OCR failed.",
-                    "attempts": captcha_attempts,
-                    "debug": debug_log
-                }
+                return {"error": "SEARCH_FAILED",
+                        "message": f"Search failed after {attempt} attempts"}
 
-            # ═══ STEP 5: WAIT FOR RESULT TABLE TO RENDER ═══
-            # ⚡ CRITICAL FIX: Table render hone ka wait karo
-            debug_log.append("Waiting for result table to render...")
+            # Check API response for errors
+            if api_resp["data"]:
+                body_str = api_resp["data"]["body"].lower()
+                for err in ["no data found", "not found", "no record", "no voter",
+                            "invalid epic", "invalid captcha"]:
+                    if err in body_str:
+                        await browser.close()
+                        return {"error": "NO_DATA",
+                                "message": f"No voter record found for EPIC: {epic}"}
+
+            # Wait for View Details
+            vd_clicked = False
+            final_body = ""
             
-            view_details_found = False
-            for wait_attempt in range(10):
-                await page.wait_for_timeout(500)
+            for wait_i in range(30):
+                await page.wait_for_timeout(300)
                 
-                # Check if View Details exists
-                has_vd = await page.evaluate("""() => {
-                    for (const el of document.querySelectorAll('a, button')) {
+                try:
+                    final_body = await page.evaluate("() => document.body.innerText")
+                except:
+                    pass
+                
+                # Check for VD
+                vd = await page.evaluate("""() => {
+                    for (const el of document.querySelectorAll('button, a, span, div, td')) {
                         const t = (el.innerText || '').trim();
-                        if (t.toLowerCase().includes('view details') || 
-                            t.toLowerCase() === 'view details') {
-                            return true;
-                        }
-                    }
-                    return false;
-                }""")
-                
-                if has_vd:
-                    view_details_found = True
-                    debug_log.append(f"View Details found after {(wait_attempt+1)*500}ms")
-                    break
-                
-                debug_log.append(f"Wait attempt {wait_attempt+1}: View Details not found yet")
-            
-            # If still not found, check for "No data" message
-            if not view_details_found:
-                body_text = await page.evaluate("() => document.body.innerText")
-                if "no data" in body_text.lower() or "not found" in body_text.lower():
-                    await browser.close()
-                    return {
-                        "status": "error",
-                        "error_code": "NO_DATA_FOUND",
-                        "message": f"No voter data found for EPIC: {epic}",
-                        "debug": debug_log
-                    }
-                
-                # Try one more time with longer wait
-                await page.wait_for_timeout(3000)
-                
-                # Check again with relaxed selector
-                has_vd = await page.evaluate("""() => {
-                    const body = document.body.innerText;
-                    return body.includes('View Details') || body.includes('view details');
-                }""")
-                
-                if not has_vd:
-                    await browser.close()
-                    return {
-                        "status": "error",
-                        "error_code": "VIEW_DETAILS_FAILED",
-                        "message": "View Details button not found after 8s wait. Table may not have rendered.",
-                        "debug": debug_log,
-                        "body_preview": body_text[:500] if body_text else ""
-                    }
-
-            # ═══ STEP 6: Click View Details ═══
-            await page.wait_for_timeout(500)
-            
-            clicked_vd = await page.evaluate("""() => {
-                for (const el of document.querySelectorAll('a, button')) {
-                    const t = (el.innerText || '').trim();
-                    if (t === 'View Details' || t.toLowerCase() === 'view details') {
-                        el.scrollIntoView({block:'center'});
-                        el.click();
-                        return {success: true, text: t, tag: el.tagName};
-                    }
-                }
-                return {success: false};
-            }""")
-
-            if not clicked_vd.get("success"):
-                # Try alternative: find link with href containing "viewdetail"
-                clicked_vd = await page.evaluate("""() => {
-                    for (const el of document.querySelectorAll('a')) {
-                        const h = el.href || '';
-                        if (h.toLowerCase().includes('viewdetail')) {
-                            el.scrollIntoView({block:'center'});
-                            el.click();
-                            return {success: true, text: 'href-match', tag: 'a'};
+                        const tl = t.toLowerCase();
+                        if (tl === 'view details' || tl.includes('view detail')) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0) {
+                                el.scrollIntoView({block:'center'});
+                                el.click();
+                                return {success: true, text: t};
+                            }
                         }
                     }
                     return {success: false};
                 }""")
-            
-            if not clicked_vd.get("success"):
-                await browser.close()
-                return {
-                    "status": "error",
-                    "error_code": "VIEW_DETAILS_CLICK_FAILED",
-                    "message": "Could not click View Details button",
-                    "debug": debug_log
-                }
-
-            debug_log.append(f"View Details clicked: {clicked_vd.get('text')}")
-
-            # ═══ STEP 7: Wait for detail page ═══
-            detail_ready = False
-            for _ in range(50):  # Increased from 40
+                
+                if vd.get("success"):
+                    vd_clicked = True
+                    break
+                
+                # Check URL change
                 try:
-                    cur = page.url
-                    if "viewdetail" in cur.lower():
-                        detail_ready = True
-                        debug_log.append(f"Detail URL: {cur[:80]}")
+                    if "viewdetail" in page.url.lower():
+                        vd_clicked = True
                         break
-                except Exception:
+                except:
                     pass
-                await page.wait_for_timeout(200)
+
+            if not vd_clicked:
+                await browser.close()
+                return {"error": "VIEW_DETAILS_FAILED",
+                        "message": "View Details button not found",
+                        "body_preview": final_body[:300] if final_body else ""}
+
+            # Wait for detail page
+            detail_ready = False
+            for _ in range(40):
+                try:
+                    if "viewdetail" in page.url.lower():
+                        detail_ready = True
+                        break
+                except:
+                    pass
+                await page.wait_for_timeout(150)
 
             if not detail_ready:
                 for pg in ctx.pages:
                     if "viewdetail" in pg.url.lower():
                         page = pg
                         detail_ready = True
-                        debug_log.append(f"Detail URL (new tab): {pg.url[:80]}")
                         break
 
             if not detail_ready:
                 await browser.close()
-                return {
-                    "status": "error",
-                    "error_code": "DETAIL_PAGE_FAILED",
-                    "message": "Detail page not detected after 10s",
-                    "debug": debug_log
-                }
+                return {"error": "DETAIL_PAGE_FAILED",
+                        "message": "Detail page not loaded"}
 
             # Wait for SPA render
             try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
+                await page.wait_for_load_state("networkidle", timeout=8000)
+            except:
                 pass
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(1800)
 
-            # Get body text
+            # Get body
             body = await page.evaluate("() => document.body.innerText")
             if not body or len(body) < 100:
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(1500)
                 body = await page.evaluate("() => document.body.innerText")
 
-            # Extract detail
             d = extract_detail(body)
-            debug_log.append(f"Extracted {len(d)} fields, body length: {len(body) if body else 0}")
-
             await browser.close()
 
-            return {
-                "status": "success",
-                "epic": epic,
-                "detail": d,
-                "raw_length": len(body) if body else 0,
-                "debug": debug_log,
-                "credit": {
-                    "username": "@KINGFFAIAK47x",
-                    "made_by": "ANSH AFT"
-                }
-            }
+            return {"detail": d, "raw_length": len(body) if body else 0}
 
         except Exception as e:
             try:
                 await browser.close()
-            except Exception:
+            except:
                 pass
-            return {
-                "status": "error",
-                "error_code": "UNKNOWN_ERROR",
-                "message": str(e)[:200],
-                "traceback": traceback.format_exc()[:500],
-                "debug": debug_log
-            }
+            return {"error": "UNKNOWN_ERROR", "message": str(e)[:200]}
 
 
 # ==============================================
@@ -794,56 +623,35 @@ def home():
     return jsonify({
         "service": "🗳️ ECI Voter Info API",
         "version": "1.0.0",
-        "description": "Get Indian voter details from ECI",
         "endpoints": {
             "/api/voterid": {
-                "method": "GET",
-                "description": "Get voter details by EPIC number",
-                "example": "/api/voterid?key={your_api_key}&epic_number={epic_number}"
+                "example": "/api/voterid?key={your_api_key}&epic_number={epic}"
             },
-            "/health": {
-                "method": "GET"
-            }
+            "/cache/stats": {"example": "/cache/stats"},
+            "/health": {"example": "/health"}
         },
-        "credit": {
-            "username": "@KINGFFAIAK47x",
-            "made_by": "ANSH AFT"
-        }
+        "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
     })
 
 
 @app.route('/api/voterid', methods=['GET'])
 def voterid_query():
-    api_key = request.args.get('key', '').strip()
-    epic = request.args.get('epic_number', '').strip()
+    k = request.args.get('key', '').strip()
+    e = request.args.get('epic_number', '').strip()
     
-    if not api_key:
-        return jsonify({
-            "status": "error",
-            "error_code": "MISSING_API_KEY",
-            "message": "API key required",
-            "usage": "/api/voterid?key={your_api_key}&epic_number={epic}",
-            "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-        }), 401
+    if not k:
+        return jsonify({"status": "error", "error_code": "MISSING_API_KEY",
+                        "message": "API key required"}), 401
     
-    if api_key not in VALID_KEYS:
-        return jsonify({
-            "status": "error",
-            "error_code": "INVALID_API_KEY",
-            "message": "Invalid API key",
-            "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-        }), 403
+    if k not in VALID_KEYS:
+        return jsonify({"status": "error", "error_code": "INVALID_API_KEY",
+                        "message": "Invalid API key"}), 403
     
-    if not epic:
-        return jsonify({
-            "status": "error",
-            "error_code": "MISSING_EPIC",
-            "message": "EPIC number required",
-            "usage": "/api/voterid?key={your_api_key}&epic_number={epic}",
-            "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-        }), 400
+    if not e:
+        return jsonify({"status": "error", "error_code": "MISSING_EPIC",
+                        "message": "EPIC number required"}), 400
     
-    return process_voter(epic)
+    return process_voter(e)
 
 
 @app.route('/api/voterid/key=<key>/epic_number=<epic>', methods=['GET'])
@@ -853,59 +661,35 @@ def voterid_path(key, epic):
 
 
 @app.route('/cache/stats', methods=['GET'])
-def cache_stats():
-    return jsonify({
-        "status": "success",
-        "cache": get_cache_stats(),
-        "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-    })
+def cache_stats_ep():
+    return jsonify(cache_stats())
 
 
 @app.route('/cache/clear', methods=['GET'])
-def cache_clear():
+def cache_clear_ep():
     epic = request.args.get('epic', '').strip().upper()
-    if epic:
-        success = clear_cache(epic)
-        return jsonify({
-            "status": "success" if success else "error",
-            "message": f"Cache cleared for {epic}" if success else "Not found",
-            "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-        })
-    else:
-        success = clear_cache()
-        return jsonify({
-            "status": "success" if success else "error",
-            "message": "All cache cleared" if success else "Failed",
-            "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-        })
+    ok = cache_clear(epic) if epic else cache_clear()
+    return jsonify({"success": ok})
 
-
-# ==============================================
-# PROCESS FUNCTION
-# ==============================================
 
 def process_voter(epic):
-    is_valid, result = validate_epic(epic)
-    if not is_valid:
-        return jsonify({
-            "status": "error",
-            "error_code": "INVALID_EPIC",
-            "message": result,
-            "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-        }), 400
+    ok, result = validate_epic(epic)
+    if not ok:
+        return jsonify({"status": "error", "error_code": "INVALID_EPIC",
+                        "message": result}), 400
     
     epic_clean = result
-    start_time = time.time()
+    start = time.time()
     
     # Cache check
-    cached = get_from_cache(epic_clean)
+    cached = cache_get(epic_clean)
     if cached:
-        total_time = round((time.time() - start_time) * 1000, 2)
-        cached["response_time"] = f"{total_time}ms"
+        cached.pop("_ts", None)
+        cached["response_time"] = f"{round((time.time()-start)*1000,2)}ms"
         cached["_from_cache"] = True
         return jsonify(cached), 200
     
-    # Fetch from ECI
+    # Run
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -914,81 +698,70 @@ def process_voter(epic):
         finally:
             loop.close()
         
-        total_time = round((time.time() - start_time) * 1000, 2)
-        result["response_time"] = f"{total_time}ms"
-        result["_from_cache"] = False
+        total = round((time.time()-start)*1000, 2)
         
-        if result.get("status") == "success":
-            save_to_cache(epic_clean, result)
-            return jsonify(result), 200
-        else:
-            return jsonify(result), 400
-            
+        if "error" in result:
+            return jsonify({
+                "status": "error",
+                "error_code": result["error"],
+                "message": result.get("message", "Failed"),
+                "response_time": f"{total}ms"
+            }), 400
+        
+        # Success
+        out = {
+            "status": "success",
+            "epic": epic_clean,
+            "detail": result.get("detail", {}),
+            "response_time": f"{total}ms",
+            "_from_cache": False
+        }
+        
+        cache_set(epic_clean, out)
+        return jsonify(out), 200
+        
     except Exception as e:
         return jsonify({
             "status": "error",
             "error_code": "FATAL_ERROR",
-            "message": str(e)[:200],
-            "traceback": traceback.format_exc()[:500],
-            "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
+            "message": str(e)[:200]
         }), 500
 
 
 @app.route('/health', methods=['GET'])
 def health():
-    ocr_ok = get_ocr() is not None
-    pw_ok = get_playwright() is not None
-    cache_info = get_cache_stats()
-    
     return jsonify({
         "status": "healthy",
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "ocr_loaded": ocr_ok,
-        "playwright_loaded": pw_ok,
-        "cache_entries": cache_info.get("total_entries", 0),
-        "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
+        "ocr_loaded": get_ocr() is not None,
+        "playwright_loaded": get_pw() is not None,
+        "cache_entries": cache_stats().get("total_entries", 0)
     })
 
 
 @app.errorhandler(404)
-def not_found(error):
-    return jsonify({
-        "status": "error",
-        "error_code": "NOT_FOUND",
-        "message": "Endpoint not found",
-        "usage": "/api/voterid?key=your_api_key&epic_number=ABC1234567",
-        "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-    }), 404
+def nf(e):
+    return jsonify({"status": "error", "error_code": "NOT_FOUND",
+                    "message": "Endpoint not found"}), 404
 
 
 @app.errorhandler(405)
-def method_not_allowed(error):
-    return jsonify({
-        "status": "error",
-        "error_code": "METHOD_NOT_ALLOWED",
-        "message": "Only GET requests allowed",
-        "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-    }), 405
+def mna(e):
+    return jsonify({"status": "error", "error_code": "METHOD_NOT_ALLOWED",
+                    "message": "Only GET allowed"}), 405
 
 
 @app.errorhandler(500)
-def internal_error(error):
-    return jsonify({
-        "status": "error",
-        "error_code": "INTERNAL_ERROR",
-        "message": "Internal server error",
-        "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
-    }), 500
+def ie(e):
+    return jsonify({"status": "error", "error_code": "INTERNAL_ERROR",
+                    "message": "Internal error"}), 500
 
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 60)
-    print("🗳️ ECI VOTER INFO API v1.0.0 (FIXED + CACHE)")
+    print("🗳️ ECI VOTER INFO API v1.0.0 (CLEAN)")
     print("=" * 60)
-    print(f"🚀 Running on: http://localhost:{port}")
-    print(f"💾 Cache dir: {CACHE_DIR}")
-    print(f"⏰ Cache TTL: {CACHE_TTL}s")
-    print("\n🔑 Key: QWM")
+    print(f"🚀 Port: {port}")
+    print("🔑 Key: QWM")
     print("=" * 60)
     app.run(host='0.0.0.0', port=port, debug=False)
