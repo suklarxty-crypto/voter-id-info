@@ -1,4 +1,4 @@
-# main.py - ECI Voter Info API (Clean + Fast + Cache)
+# main.py - ECI Voter Info API (Bulletproof View Details)
 # Made by @KINGFFAIAK47x · ANSH AFT
 
 from flask import Flask, jsonify, request
@@ -17,6 +17,13 @@ from datetime import datetime
 
 app = Flask(__name__)
 
+# ⚡ Suppress ONNX warnings
+os.environ["ONNX_RUNTIME_LOG_LEVEL"] = "3"
+os.environ["ORT_LOGGING_LEVEL"] = "3"
+
+import logging
+logging.getLogger("onnxruntime").setLevel(logging.ERROR)
+
 # ==============================================
 # CONFIG
 # ==============================================
@@ -34,7 +41,6 @@ CACHE_DIR = "/tmp/eci_cache"
 CACHE_TTL = 86400
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Lazy loaders
 _ocr = None
 _pw_mod = None
 
@@ -294,8 +300,7 @@ async def block_heavy(route):
     if any(x in u for x in [".woff", ".woff2", ".ttf", ".eot",
                              "google-analytics", "gtag", "hotjar",
                              "facebook", "doubleclick", "clarity.ms",
-                             "googletagmanager", ".png", ".jpg", ".jpeg",
-                             ".gif", ".svg", ".webp", ".mp4"]):
+                             "googletagmanager"]):
         await route.abort()
     else:
         await route.continue_()
@@ -311,6 +316,263 @@ async def click_refresh(page):
     except:
         pass
     await page.wait_for_timeout(200)
+
+
+# ==============================================
+# 🎯 BULLETPROOF VIEW DETAILS CLICKER
+# ==============================================
+
+async def find_and_click_view_details(page, ctx):
+    """
+    Try 12 different methods to find & click View Details
+    Returns: (success: bool, method: str, new_page or None)
+    """
+    
+    methods_tried = []
+    
+    # ═══════════════════════════════════════
+    # METHOD 1: JavaScript click by exact text
+    # ═══════════════════════════════════════
+    try:
+        result = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('button, a, span, div, td')) {
+                const t = (el.innerText || '').trim();
+                if (t === 'View Details') {
+                    el.scrollIntoView({block: 'center', behavior: 'instant'});
+                    el.click();
+                    return {success: true, tag: el.tagName, text: t};
+                }
+            }
+            return {success: false};
+        }""")
+        if result.get("success"):
+            return True, f"m1_js_exact_{result.get('tag')}", None
+    except Exception as e:
+        methods_tried.append(f"m1_fail:{str(e)[:50]}")
+    
+    # ═══════════════════════════════════════
+    # METHOD 2: href with viewdetail
+    # ═══════════════════════════════════════
+    try:
+        result = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('a[href]')) {
+                const h = (el.href || '').toLowerCase();
+                if (h.includes('viewdetail') || h.includes('view-detail')) {
+                    el.scrollIntoView({block: 'center', behavior: 'instant'});
+                    el.click();
+                    return {success: true, href: el.href};
+                }
+            }
+            return {success: false};
+        }""")
+        if result.get("success"):
+            return True, "m2_href_viewdetail", None
+    except Exception as e:
+        methods_tried.append(f"m2_fail:{str(e)[:50]}")
+    
+    # ═══════════════════════════════════════
+    # METHOD 3: onclick attribute
+    # ═══════════════════════════════════════
+    try:
+        result = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('[onclick]')) {
+                const t = (el.innerText || '').trim();
+                if (t.toLowerCase().includes('view') || t.toLowerCase().includes('detail')) {
+                    el.click();
+                    return {success: true, text: t};
+                }
+            }
+            return {success: false};
+        }""")
+        if result.get("success"):
+            return True, "m3_onclick", None
+    except Exception as e:
+        methods_tried.append(f"m3_fail:{str(e)[:50]}")
+    
+    # ═══════════════════════════════════════
+    # METHOD 4: Case-insensitive exact match
+    # ═══════════════════════════════════════
+    try:
+        result = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('button, a')) {
+                const t = (el.innerText || '').trim().toLowerCase();
+                if (t === 'view details' || t === 'view detail' || t === 'details') {
+                    el.scrollIntoView({block: 'center', behavior: 'instant'});
+                    el.click();
+                    return {success: true, text: el.innerText.trim()};
+                }
+            }
+            return {success: false};
+        }""")
+        if result.get("success"):
+            return True, "m4_lowercase_exact", None
+    except Exception as e:
+        methods_tried.append(f"m4_fail:{str(e)[:50]}")
+    
+    # ═══════════════════════════════════════
+    # METHOD 5: Playwright get_by_text (exact)
+    # ═══════════════════════════════════════
+    try:
+        loc = page.get_by_text("View Details", exact=True)
+        count = await loc.count()
+        if count > 0:
+            await loc.first.scroll_into_view_if_needed(timeout=2000)
+            await loc.first.click(timeout=2000)
+            return True, "m5_get_by_text_exact", None
+    except Exception as e:
+        methods_tried.append(f"m5_fail:{str(e)[:50]}")
+    
+    # ═══════════════════════════════════════
+    # METHOD 6: Playwright get_by_role button
+    # ═══════════════════════════════════════
+    try:
+        loc = page.get_by_role("button", name=re.compile(r"view\s*detail", re.IGNORECASE))
+        count = await loc.count()
+        if count > 0:
+            await loc.first.scroll_into_view_if_needed(timeout=2000)
+            await loc.first.click(timeout=2000)
+            return True, "m6_get_by_role_button", None
+    except Exception as e:
+        methods_tried.append(f"m6_fail:{str(e)[:50]}")
+    
+    # ═══════════════════════════════════════
+    # METHOD 7: Playwright get_by_role link
+    # ═══════════════════════════════════════
+    try:
+        loc = page.get_by_role("link", name=re.compile(r"view\s*detail", re.IGNORECASE))
+        count = await loc.count()
+        if count > 0:
+            await loc.first.scroll_into_view_if_needed(timeout=2000)
+            await loc.first.click(timeout=2000)
+            return True, "m7_get_by_role_link", None
+    except Exception as e:
+        methods_tried.append(f"m7_fail:{str(e)[:50]}")
+    
+    # ═══════════════════════════════════════
+    # METHOD 8: Force click via JS (bypass event handlers)
+    # ═══════════════════════════════════════
+    try:
+        result = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('*')) {
+                const t = (el.innerText || '').trim();
+                if (t === 'View Details' || t === 'view details') {
+                    // Dispatch full click sequence
+                    ['mousedown', 'mouseup', 'click'].forEach(evt => {
+                        el.dispatchEvent(new MouseEvent(evt, {bubbles: true, cancelable: true}));
+                    });
+                    return {success: true, tag: el.tagName};
+                }
+            }
+            return {success: false};
+        }""")
+        if result.get("success"):
+            return True, "m8_force_click", None
+    except Exception as e:
+        methods_tried.append(f"m8_fail:{str(e)[:50]}")
+    
+    # ═══════════════════════════════════════
+    # METHOD 9: Look for "Details" keyword anywhere
+    # ═══════════════════════════════════════
+    try:
+        result = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('button, a')) {
+                const t = (el.innerText || '').trim();
+                if (t.length > 0 && t.length < 30 && /detail/i.test(t)) {
+                    el.scrollIntoView({block: 'center'});
+                    el.click();
+                    return {success: true, text: t};
+                }
+            }
+            return {success: false};
+        }""")
+        if result.get("success"):
+            return True, "m9_detail_keyword", None
+    except Exception as e:
+        methods_tried.append(f"m9_fail:{str(e)[:50]}")
+    
+    # ═══════════════════════════════════════
+    # METHOD 10: Table row click (some ECI versions)
+    # ═══════════════════════════════════════
+    try:
+        result = await page.evaluate("""() => {
+            // Look for table with data and click last cell or action cell
+            const tables = document.querySelectorAll('table');
+            for (const tbl of tables) {
+                const rows = tbl.querySelectorAll('tbody tr, tr');
+                for (const row of rows) {
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length >= 2) {
+                        // Click last cell
+                        const lastCell = cells[cells.length - 1];
+                        const t = (lastCell.innerText || '').trim();
+                        if (t && t.length < 30 && /view|detail|show|more/i.test(t)) {
+                            lastCell.click();
+                            return {success: true, text: t};
+                        }
+                    }
+                }
+            }
+            return {success: false};
+        }""")
+        if result.get("success"):
+            return True, "m10_table_row", None
+    except Exception as e:
+        methods_tried.append(f"m10_fail:{str(e)[:50]}")
+    
+    # ═══════════════════════════════════════
+    # METHOD 11: Look for result card and click
+    # ═══════════════════════════════════════
+    try:
+        result = await page.evaluate("""() => {
+            const cardSelectors = [
+                '[class*="voter"]', '[class*="result"]', '[class*="detail"]',
+                '[class*="card"]', '[class*="search-result"]'
+            ];
+            for (const sel of cardSelectors) {
+                for (const card of document.querySelectorAll(sel)) {
+                    const t = (card.innerText || '').toLowerCase();
+                    if (t.includes('view') && t.includes('detail')) {
+                        // Click a link inside
+                        const link = card.querySelector('a, button');
+                        if (link) {
+                            link.click();
+                            return {success: true, card_selector: sel};
+                        }
+                        card.click();
+                        return {success: true, card_selector: sel, direct: true};
+                    }
+                }
+            }
+            return {success: false};
+        }""")
+        if result.get("success"):
+            return True, "m11_result_card", None
+    except Exception as e:
+        methods_tried.append(f"m11_fail:{str(e)[:50]}")
+    
+    # ═══════════════════════════════════════
+    # METHOD 12: Find by aria-label or title
+    # ═══════════════════════════════════════
+    try:
+        result = await page.evaluate("""() => {
+            const attrs = ['aria-label', 'title', 'data-action', 'data-testid'];
+            for (const attr of attrs) {
+                for (const el of document.querySelectorAll(`[${attr}]`)) {
+                    const v = (el.getAttribute(attr) || '').toLowerCase();
+                    if (v.includes('view') && v.includes('detail')) {
+                        el.click();
+                        return {success: true, attr: attr, value: v};
+                    }
+                }
+            }
+            return {success: false};
+        }""")
+        if result.get("success"):
+            return True, "m12_attr_based", None
+    except Exception as e:
+        methods_tried.append(f"m12_fail:{str(e)[:50]}")
+    
+    return False, "all_failed", None
 
 
 # ==============================================
@@ -331,6 +593,7 @@ async def run_search(epic):
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--single-process",
+                "--disable-software-rasterizer",
             ],
         )
         
@@ -390,16 +653,17 @@ async def run_search(epic):
 
             await page.wait_for_timeout(200)
 
-            # Response hook
+            # API response hook
             api_resp = {"data": None}
 
             async def on_resp(resp):
                 try:
                     u = resp.url.lower()
                     if "search-by-epic" in u or "searchbyepic" in u:
+                        body_text = await resp.text()
                         api_resp["data"] = {
                             "status": resp.status,
-                            "body": (await resp.text())[:1000]
+                            "body": body_text[:2000]
                         }
                 except:
                     pass
@@ -409,8 +673,11 @@ async def run_search(epic):
             # Captcha loop
             last_txt = None
             search_done = False
+            captcha_attempts = 0
 
             for attempt in range(1, 16):
+                captcha_attempts = attempt
+
                 cap_src = await page.evaluate("""() => {
                     for (const img of document.querySelectorAll('img')) {
                         const s = img.src || '';
@@ -506,105 +773,166 @@ async def run_search(epic):
             if not search_done:
                 await browser.close()
                 return {"error": "SEARCH_FAILED",
-                        "message": f"Search failed after {attempt} attempts"}
+                        "message": f"Search failed after {captcha_attempts} attempts"}
 
-            # Check API response for errors
+            # ═══════════════════════════════════════════════
+            # ⚡ CHECK API RESPONSE FOR ERRORS FIRST
+            # ═══════════════════════════════════════════════
             if api_resp["data"]:
                 body_str = api_resp["data"]["body"].lower()
-                for err in ["no data found", "not found", "no record", "no voter",
-                            "invalid epic", "invalid captcha"]:
+                error_keywords = [
+                    "no data found", "not found", "no record", "no voter",
+                    "invalid epic", "not registered", "no results"
+                ]
+                for err in error_keywords:
                     if err in body_str:
                         await browser.close()
                         return {"error": "NO_DATA",
                                 "message": f"No voter record found for EPIC: {epic}"}
 
-            # Wait for View Details
-            vd_clicked = False
-            final_body = ""
+            # ═══════════════════════════════════════════════
+            # ⚡ WAIT + RETRY FOR VIEW DETAILS (MULTIPLE ROUNDS)
+            # ═══════════════════════════════════════════════
             
-            for wait_i in range(30):
-                await page.wait_for_timeout(300)
+            vd_success = False
+            vd_method = ""
+            new_page = None
+            
+            # Round 1: Fast waits (10 × 400ms = 4s)
+            for wait_i in range(10):
+                await page.wait_for_timeout(400)
                 
-                try:
-                    final_body = await page.evaluate("() => document.body.innerText")
-                except:
-                    pass
-                
-                # Check for VD
-                vd = await page.evaluate("""() => {
-                    for (const el of document.querySelectorAll('button, a, span, div, td')) {
-                        const t = (el.innerText || '').trim();
-                        const tl = t.toLowerCase();
-                        if (tl === 'view details' || tl.includes('view detail')) {
-                            const r = el.getBoundingClientRect();
-                            if (r.width > 0 && r.height > 0) {
-                                el.scrollIntoView({block:'center'});
-                                el.click();
-                                return {success: true, text: t};
-                            }
-                        }
-                    }
-                    return {success: false};
-                }""")
-                
-                if vd.get("success"):
-                    vd_clicked = True
+                success, method, np = await find_and_click_view_details(page, ctx)
+                if success:
+                    vd_success = True
+                    vd_method = f"round1_{method}"
+                    new_page = np
                     break
                 
-                # Check URL change
+                # Check if URL changed (some versions redirect)
                 try:
                     if "viewdetail" in page.url.lower():
-                        vd_clicked = True
+                        vd_success = True
+                        vd_method = "round1_url_change"
                         break
                 except:
                     pass
-
-            if not vd_clicked:
+            
+            # Round 2: Extended waits (10 × 800ms = 8s)
+            if not vd_success:
+                for wait_i in range(10):
+                    await page.wait_for_timeout(800)
+                    
+                    success, method, np = await find_and_click_view_details(page, ctx)
+                    if success:
+                        vd_success = True
+                        vd_method = f"round2_{method}"
+                        new_page = np
+                        break
+                    
+                    try:
+                        if "viewdetail" in page.url.lower():
+                            vd_success = True
+                            vd_method = "round2_url_change"
+                            break
+                    except:
+                        pass
+                    
+                    # Scroll to trigger lazy load
+                    try:
+                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    except:
+                        pass
+            
+            # Round 3: Very long wait (5 × 2s = 10s)
+            if not vd_success:
+                for wait_i in range(5):
+                    await page.wait_for_timeout(2000)
+                    
+                    success, method, np = await find_and_click_view_details(page, ctx)
+                    if success:
+                        vd_success = True
+                        vd_method = f"round3_{method}"
+                        new_page = np
+                        break
+                    
+                    try:
+                        if "viewdetail" in page.url.lower():
+                            vd_success = True
+                            vd_method = "round3_url_change"
+                            break
+                    except:
+                        pass
+            
+            if not vd_success:
+                # Get body for diagnosis
+                try:
+                    body = await page.evaluate("() => document.body.innerText")
+                except:
+                    body = ""
+                
                 await browser.close()
-                return {"error": "VIEW_DETAILS_FAILED",
-                        "message": "View Details button not found",
-                        "body_preview": final_body[:300] if final_body else ""}
+                return {
+                    "error": "VIEW_DETAILS_FAILED",
+                    "message": "View Details button not found after all 12 methods",
+                    "body_preview": body[:500] if body else ""
+                }
 
-            # Wait for detail page
+            # ═══════════════════════════════════════════════
+            # WAIT FOR DETAIL PAGE
+            # ═══════════════════════════════════════════════
             detail_ready = False
-            for _ in range(40):
-                try:
-                    if "viewdetail" in page.url.lower():
-                        detail_ready = True
-                        break
-                except:
-                    pass
-                await page.wait_for_timeout(150)
-
-            if not detail_ready:
-                for pg in ctx.pages:
-                    if "viewdetail" in pg.url.lower():
-                        page = pg
-                        detail_ready = True
-                        break
+            
+            # Check if we already have new_page reference
+            if new_page:
+                page = new_page
+                detail_ready = True
+            else:
+                # Wait for URL change
+                for _ in range(50):
+                    try:
+                        if "viewdetail" in page.url.lower():
+                            detail_ready = True
+                            break
+                    except:
+                        pass
+                    await page.wait_for_timeout(150)
+                
+                # Check new tabs
+                if not detail_ready:
+                    for pg in ctx.pages:
+                        if "viewdetail" in pg.url.lower():
+                            page = pg
+                            detail_ready = True
+                            break
 
             if not detail_ready:
                 await browser.close()
                 return {"error": "DETAIL_PAGE_FAILED",
                         "message": "Detail page not loaded"}
 
-            # Wait for SPA render
+            # ═══════════════════════════════════════════════
+            # WAIT FOR SPA RENDER + EXTRACT
+            # ═══════════════════════════════════════════════
             try:
                 await page.wait_for_load_state("networkidle", timeout=8000)
             except:
                 pass
-            await page.wait_for_timeout(1800)
+            await page.wait_for_timeout(2000)
 
-            # Get body
             body = await page.evaluate("() => document.body.innerText")
             if not body or len(body) < 100:
-                await page.wait_for_timeout(1500)
+                await page.wait_for_timeout(2000)
                 body = await page.evaluate("() => document.body.innerText")
 
             d = extract_detail(body)
             await browser.close()
 
-            return {"detail": d, "raw_length": len(body) if body else 0}
+            return {
+                "detail": d,
+                "raw_length": len(body) if body else 0,
+                "vd_method": vd_method
+            }
 
         except Exception as e:
             try:
@@ -626,9 +954,7 @@ def home():
         "endpoints": {
             "/api/voterid": {
                 "example": "/api/voterid?key={your_api_key}&epic_number={epic}"
-            },
-            "/cache/stats": {"example": "/cache/stats"},
-            "/health": {"example": "/health"}
+            }
         },
         "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
     })
@@ -681,7 +1007,7 @@ def process_voter(epic):
     epic_clean = result
     start = time.time()
     
-    # Cache check
+    # Cache
     cached = cache_get(epic_clean)
     if cached:
         cached.pop("_ts", None)
@@ -689,7 +1015,6 @@ def process_voter(epic):
         cached["_from_cache"] = True
         return jsonify(cached), 200
     
-    # Run
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -708,7 +1033,6 @@ def process_voter(epic):
                 "response_time": f"{total}ms"
             }), 400
         
-        # Success
         out = {
             "status": "success",
             "epic": epic_clean,
@@ -759,7 +1083,7 @@ def ie(e):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 60)
-    print("🗳️ ECI VOTER INFO API v1.0.0 (CLEAN)")
+    print("🗳️ ECI VOTER INFO API v2.0 (BULLETPROOF)")
     print("=" * 60)
     print(f"🚀 Port: {port}")
     print("🔑 Key: QWM")
