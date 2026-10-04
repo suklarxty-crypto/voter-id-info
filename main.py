@@ -1,4 +1,4 @@
-# main.py - ECI Voter Info API (Render Docker)
+# main.py - ECI Voter Info API (Render Docker + Cache)
 # Made by @KINGFFAIAK47x · ANSH AFT
 
 from flask import Flask, jsonify, request
@@ -10,8 +10,10 @@ import os
 import re
 import time
 import traceback
+import hashlib
 from functools import wraps
 from collections import Counter
+from datetime import datetime
 
 # ==============================================
 # 🗳️ ECI VOTER INFO API
@@ -38,6 +40,15 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "Chrome/154.0.0.0 Safari/537.36")
 
 CAPTCHA_LEN = 6
+
+# ==============================================
+# CACHE CONFIG
+# ==============================================
+
+CACHE_DIR = "/tmp/eci_cache"
+CACHE_TTL = 86400  # 24 hours
+os.makedirs(CACHE_DIR, exist_ok=True)
+
 
 # ==============================================
 # LAZY LOADERS
@@ -71,6 +82,98 @@ def get_playwright():
             print(f"❌ Playwright load failed: {e}")
             return None
     return _playwright_mod
+
+
+# ==============================================
+# CACHE FUNCTIONS
+# ==============================================
+
+def get_cache_path(epic):
+    """Get cache file path for EPIC"""
+    hash_name = hashlib.md5(epic.encode()).hexdigest()
+    return os.path.join(CACHE_DIR, f"{hash_name}.json")
+
+
+def get_from_cache(epic):
+    """Get cached data for EPIC"""
+    path = get_cache_path(epic)
+    if not os.path.exists(path):
+        return None
+    
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        cached_at = data.get("_cached_at_ts", 0)
+        if time.time() - cached_at > CACHE_TTL:
+            try:
+                os.remove(path)
+            except:
+                pass
+            return None
+        
+        return data
+    except:
+        return None
+
+
+def save_to_cache(epic, data):
+    """Save data to cache"""
+    try:
+        cache_data = data.copy()
+        cache_data["_cached_at_ts"] = time.time()
+        cache_data["_cached_at"] = datetime.now().isoformat()
+        
+        path = get_cache_path(epic)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cache_data, f, ensure_ascii=False)
+        return True
+    except:
+        return False
+
+
+def clear_cache(epic=None):
+    """Clear cache for specific EPIC or all"""
+    if epic:
+        path = get_cache_path(epic)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+                return True
+            except:
+                return False
+        return False
+    else:
+        # Clear all
+        try:
+            for f in os.listdir(CACHE_DIR):
+                if f.endswith(".json"):
+                    os.remove(os.path.join(CACHE_DIR, f))
+            return True
+        except:
+            return False
+
+
+def get_cache_stats():
+    """Get cache statistics"""
+    try:
+        files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json")]
+        total_size = 0
+        for f in files:
+            try:
+                total_size += os.path.getsize(os.path.join(CACHE_DIR, f))
+            except:
+                pass
+        
+        return {
+            "total_entries": len(files),
+            "total_size_bytes": total_size,
+            "total_size_kb": round(total_size / 1024, 2),
+            "cache_dir": CACHE_DIR,
+            "ttl_seconds": CACHE_TTL
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ==============================================
@@ -304,7 +407,7 @@ async def run_search(epic):
         return {
             "status": "error",
             "error_code": "PLAYWRIGHT_MISSING",
-            "message": "Playwright not installed. Install: pip install playwright && playwright install chromium"
+            "message": "Playwright not installed"
         }
     
     async with async_playwright() as p:
@@ -332,7 +435,6 @@ async def run_search(epic):
             """)
             await page.route("**/*", block_heavy)
 
-            # Load page
             try:
                 await page.goto(BASE + "/", wait_until="domcontentloaded", timeout=20000)
             except Exception as e:
@@ -345,7 +447,6 @@ async def run_search(epic):
 
             await page.wait_for_timeout(700)
 
-            # Click EPIC tab
             for sel in ['text=Search by EPIC', 'text=ईपीआईसी द्वारा खोजें',
                         'button:has-text("EPIC")']:
                 try:
@@ -356,7 +457,6 @@ async def run_search(epic):
 
             await page.wait_for_timeout(250)
 
-            # Fill EPIC
             ok = await page.evaluate("""(epic) => {
                 for (const e of document.querySelectorAll('input')) {
                     const s = (e.placeholder||'') + (e.name||'') + (e.id||'');
@@ -382,7 +482,6 @@ async def run_search(epic):
 
             await page.wait_for_timeout(200)
 
-            # Search response hook
             search_ok = {"v": False}
 
             async def on_resp(resp):
@@ -395,7 +494,6 @@ async def run_search(epic):
 
             page.on("response", on_resp)
 
-            # Captcha + search loop
             last_txt = None
             search_done = False
             captcha_attempts = 0
@@ -439,7 +537,6 @@ async def run_search(epic):
 
                 last_txt = text
 
-                # Fill captcha
                 await page.evaluate("""(txt) => {
                     for (const e of document.querySelectorAll('input')) {
                         const s = (e.placeholder||'') + (e.name||'') + (e.id||'');
@@ -457,7 +554,6 @@ async def run_search(epic):
 
                 await page.wait_for_timeout(80)
 
-                # Click SEARCH
                 clicked = await page.evaluate("""() => {
                     for (const b of document.querySelectorAll('button')) {
                         const t = (b.innerText || '').trim();
@@ -500,11 +596,10 @@ async def run_search(epic):
                 return {
                     "status": "error",
                     "error_code": "SEARCH_FAILED",
-                    "message": f"Search failed after {captcha_attempts} attempts. Captcha OCR may have failed.",
+                    "message": f"Search failed after {captcha_attempts} attempts.",
                     "attempts": captcha_attempts
                 }
 
-            # Click View Details
             await page.wait_for_timeout(500)
 
             clicked_vd = await page.evaluate("""() => {
@@ -527,7 +622,6 @@ async def run_search(epic):
                     "message": "View Details button not found"
                 }
 
-            # Wait for detail page
             detail_ready = False
             for _ in range(40):
                 try:
@@ -661,6 +755,42 @@ def voterid_path(key, epic):
     return process_voter(epic)
 
 
+# ==============================================
+# CACHE ENDPOINTS
+# ==============================================
+
+@app.route('/cache/stats', methods=['GET'])
+def cache_stats():
+    return jsonify({
+        "status": "success",
+        "cache": get_cache_stats(),
+        "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
+    })
+
+
+@app.route('/cache/clear', methods=['GET'])
+def cache_clear():
+    epic = request.args.get('epic', '').strip().upper()
+    if epic:
+        success = clear_cache(epic)
+        return jsonify({
+            "status": "success" if success else "error",
+            "message": f"Cache cleared for {epic}" if success else "Cache entry not found",
+            "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
+        })
+    else:
+        success = clear_cache()
+        return jsonify({
+            "status": "success" if success else "error",
+            "message": "All cache cleared" if success else "Failed to clear cache",
+            "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
+        })
+
+
+# ==============================================
+# PROCESS FUNCTION
+# ==============================================
+
 def process_voter(epic):
     is_valid, result = validate_epic(epic)
     if not is_valid:
@@ -674,6 +804,15 @@ def process_voter(epic):
     epic_clean = result
     start_time = time.time()
     
+    # ⚡ CACHE CHECK FIRST
+    cached = get_from_cache(epic_clean)
+    if cached:
+        total_time = round((time.time() - start_time) * 1000, 2)
+        cached["response_time"] = f"{total_time}ms"
+        cached["_from_cache"] = True
+        return jsonify(cached), 200
+    
+    # ⚡ NO CACHE — Fetch from ECI
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -684,8 +823,11 @@ def process_voter(epic):
         
         total_time = round((time.time() - start_time) * 1000, 2)
         result["response_time"] = f"{total_time}ms"
+        result["_from_cache"] = False
         
+        # ⚡ SAVE TO CACHE IF SUCCESS
         if result.get("status") == "success":
+            save_to_cache(epic_clean, result)
             return jsonify(result), 200
         else:
             return jsonify(result), 400
@@ -700,19 +842,29 @@ def process_voter(epic):
         }), 500
 
 
+# ==============================================
+# HEALTH
+# ==============================================
+
 @app.route('/health', methods=['GET'])
 def health():
     ocr_ok = get_ocr() is not None
     pw_ok = get_playwright() is not None
+    cache_info = get_cache_stats()
     
     return jsonify({
         "status": "healthy",
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "ocr_loaded": ocr_ok,
         "playwright_loaded": pw_ok,
+        "cache_entries": cache_info.get("total_entries", 0),
         "credit": {"username": "@KINGFFAIAK47x", "made_by": "ANSH AFT"}
     })
 
+
+# ==============================================
+# ERROR HANDLERS
+# ==============================================
 
 @app.errorhandler(404)
 def not_found(error):
@@ -745,15 +897,23 @@ def internal_error(error):
     }), 500
 
 
+# ==============================================
+# MAIN
+# ==============================================
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 60)
-    print("🗳️ ECI VOTER INFO API v1.0.0")
+    print("🗳️ ECI VOTER INFO API v1.0.0 (WITH CACHE)")
     print("=" * 60)
     print(f"🚀 Running on: http://localhost:{port}")
+    print(f"💾 Cache dir: {CACHE_DIR}")
+    print(f"⏰ Cache TTL: {CACHE_TTL}s ({CACHE_TTL//3600}h)")
     print("\n🔑 Key: QWM")
     print("\n📌 Endpoints:")
     print("  /api/voterid?key=your_api_key&epic_number=ABC1234567")
     print("  /api/voterid/key=your_api_key/epic_number=ABC1234567")
+    print("  /cache/stats")
+    print("  /cache/clear?epic=ABC1234567")
     print("=" * 60)
     app.run(host='0.0.0.0', port=port, debug=False)
