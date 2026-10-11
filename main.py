@@ -1,4 +1,4 @@
-# main.py - ECI Voter Info API (FINAL COMPLETE) — FULL FIELD NAMES + CREDIT
+# main.py - ECI Voter Info API (FINAL COMPLETE) — RAW JSON ONLY
 # Made by @KINGFFAIAK47x · ANSH AFT
 
 from flask import Flask, jsonify, request
@@ -240,143 +240,61 @@ def ocr_multi(img_bytes):
 
 
 # ==============================================
-# DETAIL EXTRACTION
+# ⚡ EXTRACT ONLY "national-electoral-display" FROM RAW JSON
 # ==============================================
 
-DETAIL_LABELS = [
-    ("first_name", ["प्रथम नाम/First Name", "First Name"]),
-    ("last_name", ["उपनाम/Last Name", "Last Name"]),
-    ("rel_first", ["रिश्तेदार का प्रथम नाम/Relative's First Name", "Relative's First Name"]),
-    ("rel_last", ["रिश्तेदार का उपनाम/Relative's Last Name", "Relative's Last Name"]),
-    ("age", ["उम्र/Age", "Age"]),
-    ("gender", ["लिंग/Gender", "Gender"]),
-    ("epic", ["ईपीआईसी संख्या/EPIC No", "EPIC No"]),
-    ("state", ["राज्य/State", "State"]),
-    ("pc", ["संसदीय निर्वाचन क्षेत्र संख्या - संसदीय निर्वाचन क्षेत्र/Parliamentary Constituency Number-Parliamentary Constituency Name",
-            "Parliamentary Constituency Number-Parliamentary Constituency Name"]),
-    ("ac", ["विधान सभा निर्वाचन क्षेत्र संख्या - विधान सभा निर्वाचन क्षेत्र/Assembly Constituency Number-Assembly Constituency Name",
-            "Assembly Constituency Number-Assembly Constituency Name"]),
-    ("ps", ["मतदान केंद्र/Polling Station", "Polling Station"]),
-    ("part", ["भाग संख्या-भाग का नाम/Part Number-Part Name", "Part Number-Part Name"]),
-    ("psn", ["भाग मतदाता क्रमांक/Part Serial Number", "Part Serial Number"]),
-    ("polling", ["मतदान की तारीख/Polling Date", "Polling Date"]),
-]
-
-STOP_MARKERS = [
-    "Note 1", "Note :", "ऑनलाइन मतदाता पंजीकरण", "Online Voter Registration",
-    "S. No. Designation", "चुनाव अधिकारियों", "Details of Election Officials",
-    "This output is computer generated", "This is not an identity document",
-    "नए मतदाता के", "प्रवासी मतदाता", "मौजूदा निर्वाचकों", "मतदाता सूची में आपत्ति",
-    "सुधार/स्थानांतरण",
-]
-
-
-def extract_detail(body):
-    if not body:
-        return {}
-    cut = len(body)
-    for m in STOP_MARKERS:
-        i = body.find(m)
-        if i != -1 and i < cut:
-            cut = i
-    body = body[:cut]
-    found = []
-    for key, labels in DETAIL_LABELS:
-        bp, bl = -1, 0
-        for lbl in labels:
-            i = body.find(lbl)
-            if i != -1 and (bp == -1 or i < bp):
-                bp, bl = i, len(lbl)
-        if bp != -1:
-            found.append((bp, key, bl))
-    found.sort()
-    out = {}
-    for i, (pos, key, lblen) in enumerate(found):
-        s = pos + lblen
-        e = found[i+1][0] if i+1 < len(found) else len(body)
-        v = " ".join(body[s:e].split()).strip(" :\t\n-|")
-        out[key] = v
-    return out
-
-
-# ==============================================
-# ⚡ FULL NAME COMBINATION
-# ==============================================
-
-def combine_names(detail):
-    """Combine first+last → full_name, rel_first+rel_last → relative_full_name"""
-    if not detail:
-        return detail
-
-    out = dict(detail)
-
-    first = (out.get("first_name") or "").strip()
-    last = (out.get("last_name") or "").strip()
-
-    parts = []
-    if first and first.upper() not in ("N/A", "NONE", "-"):
-        parts.append(first)
-    if last and last.upper() not in ("N/A", "NONE", "-"):
-        parts.append(last)
-
-    out["full_name"] = " ".join(parts) if parts else "N/A"
-
-    rel_first = (out.get("rel_first") or "").strip()
-    rel_last = (out.get("rel_last") or "").strip()
-
-    rel_parts = []
-    if rel_first and rel_first.upper() not in ("N/A", "NONE", "-"):
-        rel_parts.append(rel_first)
-    if rel_last and rel_last.upper() not in ("N/A", "NONE", "-"):
-        rel_parts.append(rel_last)
-
-    out["relative_full_name"] = " ".join(rel_parts) if rel_parts else "N/A"
-
-    if parts and rel_parts:
-        out["voter_with_relative"] = f"{out['full_name']} S/O {out['relative_full_name']}"
-    else:
-        out["voter_with_relative"] = out.get("full_name", "N/A")
-
-    return out
-
-
-# ==============================================
-# ⚡ RENAME TO FULL FIELD NAMES
-# ==============================================
-
-def to_full_field_names(detail):
+def filter_national_electoral_display(raw_json):
     """
-    Convert short keys → full descriptive names.
-    Example: ps → Polling Station, psn → Part Serial Number, ac → Assembly Constituency
+    Raw JSON me se sirf wahi entries return karo jinka
+    "index" == "national-electoral-display" ho.
+
+    Supports:
+      - list of dicts
+      - dict with hits / data / result / records containing list
     """
-    if not detail:
-        return {}
+    if raw_json is None:
+        return None
 
-    FIELD_MAP = {
-        "first_name":          "First Name",
-        "last_name":           "Last Name",
-        "full_name":           "Full Name",
-        "rel_first":           "Relative's First Name",
-        "rel_last":            "Relative's Last Name",
-        "relative_full_name":  "Relative Full Name",
-        "voter_with_relative": "Voter With Relative",
-        "age":                 "Age",
-        "gender":              "Gender",
-        "epic":                "EPIC Number",
-        "state":               "State",
-        "pc":                  "Parliamentary Constituency",
-        "ac":                  "Assembly Constituency",
-        "ps":                  "Polling Station",
-        "part":                "Part Number-Part Name",
-        "psn":                 "Part Serial Number",
-        "polling":             "Polling Date",
-    }
+    # Agar string hai to parse karo
+    if isinstance(raw_json, str):
+        try:
+            raw_json = json.loads(raw_json)
+        except:
+            return None
 
-    out = {}
-    for k, v in detail.items():
-        new_key = FIELD_MAP.get(k, k)
-        out[new_key] = v
-    return out
+    def _filter_list(lst):
+        out = []
+        for item in lst:
+            if isinstance(item, dict) and item.get("index") == "national-electoral-display":
+                out.append(item)
+        return out if out else None
+
+    # Case 1: Direct list
+    if isinstance(raw_json, list):
+        return _filter_list(raw_json)
+
+    # Case 2: Dict with possible nested lists
+    if isinstance(raw_json, dict):
+        # Check if itself has index
+        if raw_json.get("index") == "national-electoral-display":
+            return [raw_json]
+
+        for key in ("hits", "data", "result", "records", "content", "response"):
+            inner = raw_json.get(key)
+            if isinstance(inner, list):
+                found = _filter_list(inner)
+                if found:
+                    return found
+            elif isinstance(inner, dict):
+                # Recurse one level
+                for k2 in ("hits", "data", "result", "records"):
+                    inner2 = inner.get(k2)
+                    if isinstance(inner2, list):
+                        found = _filter_list(inner2)
+                        if found:
+                            return found
+
+    return None
 
 
 # ==============================================
@@ -816,14 +734,19 @@ async def run_search(epic):
                     "message": "Detail page loaded but body was empty"
                 }
 
-            d = extract_detail(body)
-            d = combine_names(d)
-            d = to_full_field_names(d)
+            # ⚡ Extract only "national-electoral-display" entries from raw API JSON
+            raw_filtered = None
+            try:
+                raw_api_json = json.loads(api_resp["data"]["body"])
+            except:
+                raw_api_json = api_resp["data"]["body"]
+
+            raw_filtered = filter_national_electoral_display(raw_api_json)
 
             await browser.close()
 
             return {
-                "detail": d,
+                "raw_json": raw_filtered,
                 "raw_length": len(body) if body else 0,
                 "vd_method": vd_method
             }
@@ -844,7 +767,7 @@ async def run_search(epic):
 def home():
     return jsonify({
         "service": "🗳️ ECI Voter Info API",
-        "version": "3.3.0",
+        "version": "3.5.0",
         "endpoints": {
             "/api/voterid": {
                 "example": "/api/voterid?key={your_api_key}&epic_number={epic}"
@@ -938,7 +861,7 @@ def process_voter(epic):
         out = {
             "status": "success",
             "epic": epic_clean,
-            "detail": result.get("detail", {}),
+            "raw_json": result.get("raw_json"),
             "response_time": f"{total}ms",
             "_from_cache": False,
             "credit": CREDIT
@@ -991,7 +914,7 @@ def ie(e):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 60)
-    print("🗳️ ECI VOTER INFO API v3.3 (FULL NAMES + CREDIT)")
+    print("🗳️ ECI VOTER INFO API v3.5 (RAW JSON ONLY — national-electoral-display)")
     print("=" * 60)
     print(f"🚀 Port: {port}")
     print("🔑 Key: QWM")
