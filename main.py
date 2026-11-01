@@ -1,4 +1,4 @@
-# main.py - ECI Voter Info API (FINAL COMPLETE) — RAW JSON ONLY
+# main.py - ECI Voter Info API (FINAL COMPLETE) — 1 HOUR CACHE
 # Made by @KINGFFAIAK47x · ANSH AFT
 
 from flask import Flask, jsonify, request
@@ -38,7 +38,8 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 CAPTCHA_LEN = 6
 
 CACHE_DIR = "/tmp/eci_cache"
-CACHE_TTL = 86400
+CACHE_TTL = 3600          # ⚡ 1 HOUR CACHE (was 86400 = 24h)
+CACHE_TTL_HUMAN = "1 hour"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 # ⚡ CREDIT INFO
@@ -74,7 +75,7 @@ def get_pw():
 
 
 # ==============================================
-# CACHE
+# CACHE (1 HOUR TTL)
 # ==============================================
 
 def _cp(epic):
@@ -82,18 +83,22 @@ def _cp(epic):
 
 
 def cache_get(epic):
+    """Return cached data if < 1 hour old, else delete and return None."""
     p = _cp(epic)
     if not os.path.exists(p):
         return None
     try:
         with open(p, "r", encoding="utf-8") as f:
             d = json.load(f)
-        if time.time() - d.get("_ts", 0) > CACHE_TTL:
+        age = time.time() - d.get("_ts", 0)
+        if age > CACHE_TTL:
             try:
                 os.remove(p)
             except:
                 pass
             return None
+        # attach cache age info so caller can show it
+        d["_age"] = round(age, 2)
         return d
     except:
         return None
@@ -133,8 +138,12 @@ def cache_stats():
     try:
         fs = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json")]
         sz = sum(os.path.getsize(os.path.join(CACHE_DIR, f)) for f in fs)
-        return {"total_entries": len(fs), "size_kb": round(sz / 1024, 2),
-                "ttl_seconds": CACHE_TTL}
+        return {
+            "total_entries": len(fs),
+            "size_kb": round(sz / 1024, 2),
+            "ttl_seconds": CACHE_TTL,
+            "ttl_human": CACHE_TTL_HUMAN
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -240,22 +249,13 @@ def ocr_multi(img_bytes):
 
 
 # ==============================================
-# ⚡ EXTRACT ONLY "national-electoral-display" FROM RAW JSON
+# ⚡ EXTRACT ONLY "national-electoral-display"
 # ==============================================
 
 def filter_national_electoral_display(raw_json):
-    """
-    Raw JSON me se sirf wahi entries return karo jinka
-    "index" == "national-electoral-display" ho.
-
-    Supports:
-      - list of dicts
-      - dict with hits / data / result / records containing list
-    """
     if raw_json is None:
         return None
 
-    # Agar string hai to parse karo
     if isinstance(raw_json, str):
         try:
             raw_json = json.loads(raw_json)
@@ -269,13 +269,10 @@ def filter_national_electoral_display(raw_json):
                 out.append(item)
         return out if out else None
 
-    # Case 1: Direct list
     if isinstance(raw_json, list):
         return _filter_list(raw_json)
 
-    # Case 2: Dict with possible nested lists
     if isinstance(raw_json, dict):
-        # Check if itself has index
         if raw_json.get("index") == "national-electoral-display":
             return [raw_json]
 
@@ -286,7 +283,6 @@ def filter_national_electoral_display(raw_json):
                 if found:
                     return found
             elif isinstance(inner, dict):
-                # Recurse one level
                 for k2 in ("hits", "data", "result", "records"):
                     inner2 = inner.get(k2)
                     if isinstance(inner2, list):
@@ -381,8 +377,6 @@ async def click_refresh(page):
 # ==============================================
 
 async def find_and_click_vd(page):
-    """Click View Details button"""
-
     try:
         ok = await page.evaluate("""() => {
             for (const el of document.querySelectorAll('a, button')) {
@@ -734,7 +728,6 @@ async def run_search(epic):
                     "message": "Detail page loaded but body was empty"
                 }
 
-            # ⚡ Extract only "national-electoral-display" entries from raw API JSON
             raw_filtered = None
             try:
                 raw_api_json = json.loads(api_resp["data"]["body"])
@@ -767,11 +760,14 @@ async def run_search(epic):
 def home():
     return jsonify({
         "service": "🗳️ ECI Voter Info API",
-        "version": "3.5.0",
+        "version": "3.6.0",
+        "cache_ttl": CACHE_TTL_HUMAN,
         "endpoints": {
             "/api/voterid": {
                 "example": "/api/voterid?key={your_api_key}&epic_number={epic}"
-            }
+            },
+            "/cache/stats": {"info": "Check cache status"},
+            "/cache/clear": {"info": "Clear cache (optional: ?epic=XXX)"}
         },
         "credit": CREDIT
     })
@@ -831,14 +827,20 @@ def process_voter(epic):
     epic_clean = result
     start = time.time()
 
+    # ⚡ CACHE HIT (< 1 hour)
     cached = cache_get(epic_clean)
     if cached:
+        age = cached.pop("_age", 0)
         cached.pop("_ts", None)
         cached["response_time"] = f"{round((time.time()-start)*1000,2)}ms"
         cached["_from_cache"] = True
+        cached["cache_age_seconds"] = round(age, 2)
+        cached["cache_ttl_seconds"] = CACHE_TTL
+        cached["cache_expires_in_seconds"] = max(0, round(CACHE_TTL - age, 2))
         cached["credit"] = CREDIT
         return jsonify(cached), 200
 
+    # ⚡ CACHE MISS — do fresh search
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -864,6 +866,8 @@ def process_voter(epic):
             "raw_json": result.get("raw_json"),
             "response_time": f"{total}ms",
             "_from_cache": False,
+            "cache_ttl_seconds": CACHE_TTL,
+            "cache_expires_in_seconds": CACHE_TTL,
             "credit": CREDIT
         }
 
@@ -886,6 +890,7 @@ def health():
         "ocr_loaded": get_ocr() is not None,
         "playwright_loaded": get_pw() is not None,
         "cache_entries": cache_stats().get("total_entries", 0),
+        "cache_ttl": CACHE_TTL_HUMAN,
         "credit": CREDIT
     })
 
@@ -914,9 +919,10 @@ def ie(e):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 60)
-    print("🗳️ ECI VOTER INFO API v3.5 (RAW JSON ONLY — national-electoral-display)")
+    print("🗳️ ECI VOTER INFO API v3.6 (1-HOUR CACHE)")
     print("=" * 60)
     print(f"🚀 Port: {port}")
     print("🔑 Key: QWM")
+    print(f"⏱️  Cache TTL: {CACHE_TTL_HUMAN} ({CACHE_TTL}s)")
     print("=" * 60)
     app.run(host='0.0.0.0', port=port, debug=False)
